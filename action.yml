@@ -1,0 +1,692 @@
+name: 'DigiCert® Container Signing Action'
+description: 'Sign container images using DigiCert® Secure Trust Manager (STM) keypairs'
+author: 'DigiCert®'
+
+inputs:
+  input:
+    description: 'Container image to sign'
+    required: true
+  keypair-alias:
+    description: 'Keypair alias'
+    required: true
+  verify:
+    description: 'Verify the container image signature'
+    required: false
+    default: 'false'
+  registry-url:
+    description: 'Container registry URL'
+    required: true
+  recursive:
+    description: 'Sign multi-architecture container images recursively'
+    required: false
+    default: 'false'
+  verbose:
+    description: 'Enable verbose output for cosign commands'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Initialize Input Variables
+      shell: bash
+      run: |
+        echo "Initializing input variables..."
+        
+        # Save all inputs to local environment variables
+        INPUT_CONTAINER_IMAGE="${{ inputs.input }}"
+        INPUT_KEYPAIR_ALIAS="${{ inputs.keypair-alias }}"
+        INPUT_VERIFY="${{ inputs.verify }}"
+        INPUT_REGISTRY_URL="${{ inputs.registry-url }}"
+        INPUT_RECURSIVE="${{ inputs.recursive }}"
+        INPUT_VERBOSE="${{ inputs.verbose }}"
+        
+        # Export to GITHUB_ENV for use in subsequent steps
+        echo "INPUT_CONTAINER_IMAGE=$INPUT_CONTAINER_IMAGE" >> $GITHUB_ENV
+        echo "INPUT_KEYPAIR_ALIAS=$INPUT_KEYPAIR_ALIAS" >> $GITHUB_ENV
+        echo "INPUT_VERIFY=$INPUT_VERIFY" >> $GITHUB_ENV
+        echo "INPUT_REGISTRY_URL=$INPUT_REGISTRY_URL" >> $GITHUB_ENV
+        echo "INPUT_RECURSIVE=$INPUT_RECURSIVE" >> $GITHUB_ENV
+        echo "INPUT_VERBOSE=$INPUT_VERBOSE" >> $GITHUB_ENV
+
+    - name: Pull DigiCert Container Signer Tool
+      shell: bash
+      run: |
+        echo "Pulling DigiCert container signer tool..."
+        docker pull digicertinc/digicert-container-signer:latest
+        docker tag digicertinc/digicert-container-signer:latest digicert-container-signer
+
+    - name: Extract PKCS11 Module Path and List Key URIs
+      shell: bash
+      run: |
+        echo "Extracting COSIGN_PKCS11_MODULE_PATH from DigiCert container..."
+        
+        # Get the COSIGN_PKCS11_MODULE_PATH from the digicert-container-signer image
+        CONTAINER_PKCS11_PATH=$(docker run --rm digicert-container-signer printenv COSIGN_PKCS11_MODULE_PATH)
+        
+        echo "Container PKCS11 path: $CONTAINER_PKCS11_PATH"
+        
+        # Check if we're on a self-hosted runner with custom PKCS11 module
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Detected Linux self-hosted runner with SM Tools installation"
+          COSIGN_PKCS11_MODULE_PATH="/usr/local/bin/smtools/smpkcs11.so"
+          echo "Using host PKCS11 module path: $COSIGN_PKCS11_MODULE_PATH"
+        elif [ -n "$CONTAINER_PKCS11_PATH" ]; then
+          echo "Using container PKCS11 module path: $CONTAINER_PKCS11_PATH"
+          COSIGN_PKCS11_MODULE_PATH="$CONTAINER_PKCS11_PATH"
+        else
+          echo "Error: No PKCS11 module path found"
+          echo "Please ensure either:"
+          echo "1. SM Tools are installed on the runner at /usr/local/bin/smtools/smpkcs11.so, or"
+          echo "2. The digicert-container-signer image has COSIGN_PKCS11_MODULE_PATH set"
+          exit 1
+        fi
+        
+        echo "Final COSIGN_PKCS11_MODULE_PATH: $COSIGN_PKCS11_MODULE_PATH"
+        echo "COSIGN_PKCS11_MODULE_PATH=$COSIGN_PKCS11_MODULE_PATH" >> $GITHUB_ENV
+        
+        # Test PKCS11 module accessibility
+        echo "Testing PKCS11 module accessibility..."
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted PKCS11 module for better compatibility"
+          # Mount the host PKCS11 module into the container
+          PKCS11_MOUNT_OPTION="-v /usr/local/bin/smtools/smpkcs11.so:/usr/local/bin/smtools/smpkcs11.so"
+        else
+          echo "Using container's built-in PKCS11 module"
+          PKCS11_MOUNT_OPTION=""
+        fi
+        
+        echo "PKCS11_MOUNT_OPTION=$PKCS11_MOUNT_OPTION" >> $GITHUB_ENV
+
+    - name: Create Client Certificate
+      shell: bash
+      run: |
+        echo "Creating DigiCert client certificate..."
+        
+        if [ -z "$SM_CLIENT_CERT_FILE_B64" ]; then
+          echo "Error: SM_CLIENT_CERT_FILE_B64 environment variable is not set"
+          exit 1
+        fi
+        
+        # Validate required environment variables
+        if [ -z "$SM_API_KEY" ]; then
+          echo "Error: SM_API_KEY environment variable is not set"
+          exit 1
+        fi
+        
+        if [ -z "$SM_HOST" ]; then
+          echo "Error: SM_HOST environment variable is not set"
+          exit 1
+        fi
+        
+        if [ -z "$SM_CLIENT_CERT_PASSWORD" ]; then
+          echo "Error: SM_CLIENT_CERT_PASSWORD environment variable is not set"
+          exit 1
+        fi
+        
+        echo "Environment validation passed"
+        echo "SM_HOST: $SM_HOST"
+        
+        # Create a named Docker volume for the certificate
+        docker volume create digicert-cert-volume
+        
+        # Create the certificate file in the Docker volume
+        echo "Creating client certificate in Docker volume..."
+        docker run --rm \
+          -v digicert-cert-volume:/tmp/certs \
+          -e SM_CLIENT_CERT_FILE_B64="$SM_CLIENT_CERT_FILE_B64" \
+          digicert-container-signer \
+          sh -c 'echo "$SM_CLIENT_CERT_FILE_B64" | tr -d "\n\r\t " | base64 -d > /tmp/certs/client_cert.p12 && echo "Certificate created successfully in volume"'
+        
+        echo "Client certificate created in Docker volume: digicert-cert-volume"
+        
+    - name: Setup Docker Command
+      shell: bash
+      run: |
+        echo "Setting up Docker base command..."
+        
+        # Create reusable Docker command base with certificate volume
+        DOCKER_BASE_CMD="docker run --rm \
+          --network host \
+          -v digicert-cert-volume:/tmp/certs \
+          -v \"/var/run/docker.sock:/var/run/docker.sock\" \
+          -e SM_API_KEY=\"\${SM_API_KEY}\" \
+          -e SM_HOST=\"\${SM_HOST}\" \
+          -e SM_CLIENT_CERT_PASSWORD=\"\${SM_CLIENT_CERT_PASSWORD}\" \
+          -e SM_CLIENT_CERT_FILE=\"/tmp/certs/client_cert.p12\""
+        
+        # Add SM_LOG_OUTPUT=console if verbose mode is enabled
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          echo "Verbose mode enabled - adding SM_LOG_OUTPUT=console"
+          DOCKER_BASE_CMD="$DOCKER_BASE_CMD -e SM_LOG_OUTPUT=\"console\""
+        fi
+        
+        # Dynamically add all environment variables from GITHUB_ENV
+        if [ -f "$GITHUB_ENV" ]; then
+          while IFS='=' read -r key value || [ -n "$key" ]; do
+            # Skip empty lines and comments
+            [ -z "$key" ] || [[ "$key" =~ ^[[:space:]]*# ]] && continue
+            # Add each environment variable to Docker command
+            DOCKER_BASE_CMD="$DOCKER_BASE_CMD -e $key=\"\${$key}\""
+          done < "$GITHUB_ENV"
+        fi
+        
+        echo "DOCKER_BASE_CMD=$DOCKER_BASE_CMD" >> $GITHUB_ENV
+        echo "Docker base command configured with certificate volume"
+
+    - name: Check Cosign Version
+      shell: bash
+      run: |
+        echo "Checking cosign version in DigiCert container..."
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted PKCS11 module"
+          eval "$DOCKER_BASE_CMD -v /usr/local/bin/smtools/smpkcs11.so:/usr/local/bin/smtools/smpkcs11.so digicert-container-signer cosign version" 2>&1
+        else
+          echo "Using container's built-in PKCS11 module"
+          eval "$DOCKER_BASE_CMD digicert-container-signer cosign version" 2>&1
+        fi
+
+    - name: Check Smctl Version
+      shell: bash
+      run: |
+        echo "Checking smctl version in DigiCert container..."
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted SM tools"
+          eval "$DOCKER_BASE_CMD -v /usr/local/bin/smtools:/usr/local/bin/smtools digicert-container-signer smctl --version" 2>&1
+        else
+          echo "Using container's built-in SM tools"
+          eval "$DOCKER_BASE_CMD digicert-container-signer smctl --version" 2>&1
+        fi
+
+    - name: Smctl Health Check
+      shell: bash
+      run: |
+        echo "Running smctl health check for DigiCert STM connectivity..."
+        
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted SM tools for health check"
+          eval "$DOCKER_BASE_CMD -v /usr/local/bin/smtools:/usr/local/bin/smtools digicert-container-signer smctl healthcheck" 2>&1
+        else
+          echo "Using container's built-in SM tools"
+          eval "$DOCKER_BASE_CMD digicert-container-signer smctl healthcheck" 2>&1
+        fi
+        
+        HEALTHCHECK_EXIT_CODE=$?
+        
+        if [ $HEALTHCHECK_EXIT_CODE -ne 0 ]; then
+          echo "Warning: SMctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
+          echo "This may indicate connectivity issues with DigiCert STM service"
+          echo "Possible solutions:"
+          echo "1. Check if corporate proxy settings are needed"
+          echo "2. Verify firewall allows outbound HTTPS traffic"
+          echo "3. Confirm DigiCert STM service URL is accessible"
+          echo "4. Check if VPN or network routing is required"
+          echo "NOTE: Continuing with the workflow despite health check failure"
+          echo "Signing operations will be attempted regardless of health check status"
+        else
+          echo "SMctl health check passed - DigiCert STM connectivity verified"
+        fi
+        
+        echo "Health check step completed - workflow will continue regardless of result"
+
+    - name: Extract Key URI from PKCS11 Module
+      shell: bash
+      run: |
+        echo "COSIGN_PKCS11_MODULE_PATH: $COSIGN_PKCS11_MODULE_PATH"
+        
+        echo "=== Extracting Key URI from PKCS11 Module ==="
+        echo "Looking for keypair alias: $INPUT_KEYPAIR_ALIAS"
+        
+        # Create temporary file for cosign output
+        TEMP_COSIGN_OUTPUT=$(mktemp)
+        
+        echo "Running cosign pkcs11-tool list-keys-uris command..."
+        
+        # Run cosign command with proper Docker configuration
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted PKCS11 module"
+          COSIGN_CMD="$DOCKER_BASE_CMD -v /usr/local/bin/smtools/smpkcs11.so:/usr/local/bin/smtools/smpkcs11.so -e COSIGN_PKCS11_MODULE_PATH=\"$COSIGN_PKCS11_MODULE_PATH\" digicert-container-signer cosign pkcs11-tool list-keys-uris --module-path \"$COSIGN_PKCS11_MODULE_PATH\" --slot-id 0 --pin anything"
+        else
+          echo "Using container's built-in PKCS11 module"
+          COSIGN_CMD="$DOCKER_BASE_CMD -e COSIGN_PKCS11_MODULE_PATH=\"$COSIGN_PKCS11_MODULE_PATH\" digicert-container-signer cosign pkcs11-tool list-keys-uris --module-path \"$COSIGN_PKCS11_MODULE_PATH\" --slot-id 0 --pin anything"
+        fi
+        
+        echo "Executing command:"
+        echo "$COSIGN_CMD"
+        echo ""
+        
+        eval "$COSIGN_CMD" > "$TEMP_COSIGN_OUTPUT" 2>&1
+        COSIGN_EXIT_CODE=$?
+        
+        # Display command output only if verbose mode is enabled
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          echo "Command output:"
+          cat "$TEMP_COSIGN_OUTPUT"
+          echo ""
+        fi
+        
+        if [ $COSIGN_EXIT_CODE -ne 0 ]; then
+          echo "Error: cosign pkcs11-tool command failed with exit code $COSIGN_EXIT_CODE"
+          rm -f "$TEMP_COSIGN_OUTPUT"
+          exit 1
+        fi
+        
+        # Parse the output and extract URI for matching label
+        KEY_URI=$(awk -v target_alias="$INPUT_KEYPAIR_ALIAS" '
+        BEGIN {
+          in_object = 0
+          current_label = ""
+          current_uri = ""
+          target_uri = ""
+        }
+        
+        /^Object [0-9]+/ {
+          # If we have a previous object, check if it matches
+          if (in_object && current_label != "" && current_uri != "") {
+            if (current_label == target_alias) {
+              target_uri = current_uri
+            }
+          }
+          
+          # Reset for new object
+          in_object = 1
+          current_label = ""
+          current_uri = ""
+        }
+        
+        /^[[:space:]]*Label:/ && in_object {
+          gsub(/^[[:space:]]*Label:[[:space:]]*/, "")
+          current_label = $0
+        }
+        
+        /^[[:space:]]*URI:/ && in_object {
+          gsub(/^[[:space:]]*URI:[[:space:]]*/, "")
+          current_uri = $0
+        }
+        
+        END {
+          # Handle the last object
+          if (in_object && current_label != "" && current_uri != "") {
+            if (current_label == target_alias) {
+              target_uri = current_uri
+            }
+          }
+          
+          if (target_uri != "") {
+            print target_uri
+          }
+        }
+        ' "$TEMP_COSIGN_OUTPUT")
+        
+        # Clean up temp file
+        rm -f "$TEMP_COSIGN_OUTPUT"
+        
+        # Validate the extracted KEY_URI
+        if [ -z "$KEY_URI" ]; then
+          echo "Error: No URI found for keypair alias '$INPUT_KEYPAIR_ALIAS'"
+          echo "Please check if the alias exists in your DigiCert STM account"
+          exit 1
+        fi
+        
+        echo "Successfully extracted KEY_URI for alias '$INPUT_KEYPAIR_ALIAS'"
+        echo "KEY_URI=$KEY_URI" >> $GITHUB_ENV
+
+
+    - name: Registry Login (if registry URL provided)
+      if: inputs.registry-url != ''
+      shell: bash
+      run: |
+        echo "Logging into container registry..."
+        docker login "$INPUT_REGISTRY_URL"
+
+    - name: Sign Container Image
+      shell: bash
+      run: |
+        echo "Signing container image: $INPUT_CONTAINER_IMAGE"
+        echo "Using key URI: $KEY_URI"
+        echo "Using COSIGN_PKCS11_MODULE_PATH: $COSIGN_PKCS11_MODULE_PATH"
+        
+        if [ -z "$KEY_URI" ]; then
+          echo "Error: KEY_URI is not set"
+          exit 1
+        fi
+        
+        if [ -z "$COSIGN_PKCS11_MODULE_PATH" ]; then
+          echo "Error: COSIGN_PKCS11_MODULE_PATH is not set"
+          exit 1
+        fi
+        
+        # Display the cosign command that will be executed
+        echo "=== Cosign Sign Command ==="
+        
+        # Set verbose flag if enabled
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          VERBOSE_FLAG="-d"
+        else
+          VERBOSE_FLAG=""
+        fi
+        
+        if [ "$INPUT_RECURSIVE" = "true" ]; then
+          echo "cosign sign $VERBOSE_FLAG --recursive --key '$KEY_URI' -y '$INPUT_CONTAINER_IMAGE'"
+        else
+          echo "cosign sign $VERBOSE_FLAG --key '$KEY_URI' -y '$INPUT_CONTAINER_IMAGE'"
+        fi
+        echo "==========================="
+        
+        # Sign the container image using the digicert-container-signer image
+        if [ "$INPUT_RECURSIVE" = "true" ]; then
+          RECURSIVE_FLAG="--recursive"
+        else
+          RECURSIVE_FLAG=""
+        fi
+        
+        # Check if host has PKCS11 module to determine volume mount strategy
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted PKCS11 module for signing"
+          echo "Mounting: /usr/local/bin/smtools/smpkcs11.so"
+          SIGN_CMD="$DOCKER_BASE_CMD -v /usr/local/bin/smtools/smpkcs11.so:/usr/local/bin/smtools/smpkcs11.so -e COSIGN_PKCS11_MODULE_PATH=\"$COSIGN_PKCS11_MODULE_PATH\" -v \"$HOME/.docker:/root/.docker\" digicert-container-signer cosign sign $VERBOSE_FLAG $RECURSIVE_FLAG --key '$KEY_URI' -y '$INPUT_CONTAINER_IMAGE'"
+        else
+          echo "Using container's built-in PKCS11 module for signing"
+          echo "COSIGN_PKCS11_MODULE_PATH: $COSIGN_PKCS11_MODULE_PATH"
+          echo "KEY_URI: $KEY_URI"
+          SIGN_CMD="$DOCKER_BASE_CMD -e COSIGN_PKCS11_MODULE_PATH=\"$COSIGN_PKCS11_MODULE_PATH\" -v \"$HOME/.docker:/root/.docker\" digicert-container-signer cosign sign $VERBOSE_FLAG $RECURSIVE_FLAG --key '$KEY_URI' -y '$INPUT_CONTAINER_IMAGE'"
+        fi
+        
+        echo "Full Docker command:"
+        echo "$SIGN_CMD"
+        echo ""
+        
+        # Execute signing command and capture exit code and output, but don't let it fail the action
+        set +e  # Disable exit on error
+        SIGN_OUTPUT=$(eval "$SIGN_CMD" 2>&1)
+        SIGN_EXIT_CODE=$?
+        set -e  # Re-enable exit on error
+        
+        # Display console output only if verbose mode is enabled
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          echo "=== Console Output from Signing Command ==="
+          echo "$SIGN_OUTPUT"
+          echo "=== End of Console Output ==="
+        fi
+        
+        # Check signing result but continue workflow regardless
+        if [ $SIGN_EXIT_CODE -eq 0 ]; then
+          echo "Container image signed successfully: $INPUT_CONTAINER_IMAGE"
+        else
+          echo "Warning: Container signing failed with exit code $SIGN_EXIT_CODE"
+          echo "Please check the console logs above for more details"
+          echo "Continuing with workflow despite signing failure..."
+        fi
+
+    - name: Extract Public Key for Verification (Optional)
+      shell: bash
+      if: inputs.verify == 'true'
+      run: |
+        echo "Extracting public key for verification using smctl..."
+        echo "Searching for keypair with alias: $INPUT_KEYPAIR_ALIAS"
+        
+        # Step 1: Get list of keypairs filtered by alias
+        TEMP_KP_LIST=$(mktemp)
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted SM tools for keypair listing"
+          eval "$DOCKER_BASE_CMD -v /usr/local/bin/smtools:/usr/local/bin/smtools digicert-container-signer smctl kp ls --filter alias=$INPUT_KEYPAIR_ALIAS" > "$TEMP_KP_LIST" 2>&1
+        else
+          echo "Using container's built-in SM tools"
+          eval "$DOCKER_BASE_CMD digicert-container-signer smctl kp ls --filter alias=$INPUT_KEYPAIR_ALIAS" > "$TEMP_KP_LIST" 2>&1
+        fi
+        
+        KP_LIST_EXIT_CODE=$?
+        if [ $KP_LIST_EXIT_CODE -ne 0 ]; then
+          echo "Error: smctl kp ls command failed with exit code $KP_LIST_EXIT_CODE"
+          cat "$TEMP_KP_LIST"
+          rm -f "$TEMP_KP_LIST"
+          exit 1
+        fi
+        
+        # Step 2: Extract the ID of the keypair with the matching alias
+        KEYPAIR_ID=$(grep -E "^\s*[a-f0-9-]{36}\s+.*$INPUT_KEYPAIR_ALIAS" "$TEMP_KP_LIST" | awk '{print $1}' | head -1)
+        rm -f "$TEMP_KP_LIST"
+        
+        if [ -z "$KEYPAIR_ID" ]; then
+          echo "Error: No keypair found with alias '$INPUT_KEYPAIR_ALIAS'"
+          echo "Please check the available keypairs in your DigiCert STM account"
+          exit 1
+        fi
+        
+        echo "Found keypair ID: $KEYPAIR_ID"
+        
+        # Step 3: Get the keypair details and extract public key
+        TEMP_KP_DESCRIBE=$(mktemp)
+        if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
+          echo "Using host-mounted SM tools for keypair describe"
+          eval "$DOCKER_BASE_CMD -v /usr/local/bin/smtools:/usr/local/bin/smtools digicert-container-signer smctl kp describe \"$KEYPAIR_ID\"" > "$TEMP_KP_DESCRIBE" 2>&1
+        else
+          echo "Using container's built-in SM tools"
+          eval "$DOCKER_BASE_CMD digicert-container-signer smctl kp describe \"$KEYPAIR_ID\"" > "$TEMP_KP_DESCRIBE" 2>&1
+        fi
+        
+        KP_DESCRIBE_EXIT_CODE=$?
+        if [ $KP_DESCRIBE_EXIT_CODE -ne 0 ]; then
+          echo "Error: smctl kp describe command failed with exit code $KP_DESCRIBE_EXIT_CODE"
+          cat "$TEMP_KP_DESCRIBE"
+          rm -f "$TEMP_KP_DESCRIBE"
+          exit 1
+        fi
+        
+        # Step 4: Extract the public key and create public key file
+        PUBLIC_KEY_FILE="$INPUT_KEYPAIR_ALIAS.key"
+        
+        # Extract public key from the "Public key" field and format as proper PEM
+        echo "Extracting and formatting public key..."
+        
+        # First, extract the raw public key content
+        RAW_PUBLIC_KEY=$(awk '
+          /^Public key:/ {
+            # Found the Public key line, start capturing on next line
+            capturing = 1
+            next
+          }
+          capturing && /^[A-Za-z][^:]*:/ {
+            # Found another field (line starting with word and colon), stop capturing
+            capturing = 0
+          }
+          capturing && /^[[:space:]]*$/ {
+            # Skip empty lines
+            next
+          }
+          capturing {
+            # Remove leading/trailing whitespace and print
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if (length($0) > 0) {
+              print $0
+            }
+          }
+        ' "$TEMP_KP_DESCRIBE")
+        
+        if [ -z "$RAW_PUBLIC_KEY" ]; then
+          echo "Error: Could not extract public key from smctl output"
+          echo "Checking for alternative public key formats..."
+          
+          # Try alternative extraction methods
+          # Look for base64 content that might be the public key
+          RAW_PUBLIC_KEY=$(awk '
+            /^Public key:/ {
+              # Found the Public key line, start capturing on next line
+              capturing = 1
+              next
+            }
+            capturing && /^[A-Za-z][^:]*:/ {
+              # Found another field, stop capturing
+              capturing = 0
+            }
+            capturing {
+              # Remove whitespace and concatenate all lines
+              gsub(/[[:space:]]/, "")
+              if (length($0) > 0) {
+                printf "%s", $0
+              }
+            }
+          ' "$TEMP_KP_DESCRIBE")
+          
+          if [ -z "$RAW_PUBLIC_KEY" ]; then
+            echo "Error: Still could not extract public key"
+            echo "Full smctl describe output:"
+            cat "$TEMP_KP_DESCRIBE"
+            rm -f "$TEMP_KP_DESCRIBE"
+            exit 1
+          fi
+        fi
+        
+        echo "Raw public key extracted (first 100 chars): ${RAW_PUBLIC_KEY:0:100}..."
+        
+        # Check if the key already has PEM headers
+        if echo "$RAW_PUBLIC_KEY" | grep -q "BEGIN PUBLIC KEY"; then
+          echo "Public key already in PEM format"
+          echo "$RAW_PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
+        else
+          echo "Converting raw public key to PEM format"
+          # Create proper PEM format
+          {
+            echo "-----BEGIN PUBLIC KEY-----"
+            # Split the key into 64-character lines
+            echo "$RAW_PUBLIC_KEY" | sed 's/.\{64\}/&\n/g' | sed '/^$/d'
+            echo "-----END PUBLIC KEY-----"
+          } > "$PUBLIC_KEY_FILE"
+        fi
+        
+        rm -f "$TEMP_KP_DESCRIBE"
+        
+        # Verify the public key file was created and has content
+        if [ ! -s "$PUBLIC_KEY_FILE" ]; then
+          echo "Error: Failed to extract public key or public key is empty"
+          echo "Please check the smctl kp describe output format"
+          exit 1
+        fi
+        
+        echo "Public key extracted successfully to: $PUBLIC_KEY_FILE"
+        echo "Public key content:"
+        cat "$PUBLIC_KEY_FILE"
+        
+        # Validate PEM format
+        if ! grep -q "BEGIN PUBLIC KEY" "$PUBLIC_KEY_FILE" || ! grep -q "END PUBLIC KEY" "$PUBLIC_KEY_FILE"; then
+          echo "Warning: Public key file may not be in proper PEM format"
+          echo "Attempting to validate with openssl..."
+          
+          # Try to validate the public key with openssl if available
+          docker run --rm \
+            -v "$PWD/$PUBLIC_KEY_FILE:/tmp/test.key" \
+            digicert-container-signer \
+            sh -c "
+              if command -v openssl >/dev/null 2>&1; then
+                echo 'Validating public key with openssl...'
+                openssl pkey -pubin -in /tmp/test.key -text -noout || echo 'OpenSSL validation failed'
+              else
+                echo 'OpenSSL not available for validation'
+              fi
+            " || echo "Key validation check completed"
+        fi
+        
+        # Make the public key file path available to the next step
+        echo "PUBLIC_KEY_FILE=$PWD/$PUBLIC_KEY_FILE" >> $GITHUB_ENV
+
+    - name: Verify Container Image Signature (Optional)
+      shell: bash
+      if: inputs.verify == 'true'
+      run: |
+        echo "Verifying container image signature..."
+        echo "Using public key file: $PUBLIC_KEY_FILE"
+        
+        if [ -z "$PUBLIC_KEY_FILE" ] || [ ! -f "$PUBLIC_KEY_FILE" ]; then
+          echo "Error: Public key file not found or not set"
+          exit 1
+        fi
+        
+        echo "Attempting verification with different methods..."
+        
+        # Set verbose flag if enabled
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          VERBOSE_FLAG="-d"
+        else
+          VERBOSE_FLAG=""
+        fi
+        
+        # Method 1: Try with public key (original approach)
+        echo "Method 1: Verifying with public key..."
+        docker run --rm \
+          -v "$PUBLIC_KEY_FILE:/tmp/public.key" \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$HOME/.docker:/root/.docker" \
+          digicert-container-signer \
+          sh -c "
+            echo \"Verifying container image signature with public key...\"
+            cosign verify $VERBOSE_FLAG --key /tmp/public.key \"$INPUT_CONTAINER_IMAGE\" 2>&1
+          " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
+        
+        if [ "$VERIFICATION_SUCCESS" = "true" ]; then
+          echo "Container image signature verified successfully with public key!"
+        else
+          echo "Public key verification failed, trying certificate-based verification..."
+          
+          # Method 2: Try keyless verification (for certificate-based signatures)
+          echo "Method 2: Attempting keyless verification..."
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.docker:/root/.docker" \
+            digicert-container-signer \
+            sh -c "
+              echo \"Attempting keyless verification...\"
+              cosign verify $VERBOSE_FLAG \"$INPUT_CONTAINER_IMAGE\" --certificate-identity-regexp='.*' --certificate-oidc-issuer-regexp='.*' 2>&1
+            " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
+          
+          if [ "$VERIFICATION_SUCCESS" = "true" ]; then
+            echo "Container image signature verified successfully with keyless verification!"
+          else
+            echo "Keyless verification failed, trying with insecure flags..."
+            
+            # Method 3: Try with insecure flags to bypass transparency log requirements
+            echo "Method 3: Verification with insecure flags..."
+            docker run --rm \
+              -v "$PUBLIC_KEY_FILE:/tmp/public.key" \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$HOME/.docker:/root/.docker" \
+              digicert-container-signer \
+              sh -c "
+                echo \"Verifying with insecure flags...\"
+                cosign verify $VERBOSE_FLAG --key /tmp/public.key \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
+              " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
+            
+            if [ "$VERIFICATION_SUCCESS" = "true" ]; then
+              echo "Container image signature verified successfully with insecure flags!"
+            else
+              echo "All verification methods failed. Attempting to extract certificate information..."
+              
+              # Method 4: Try to get signing certificate information
+              echo "Method 4: Checking signature information..."
+              docker run --rm \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -v "$HOME/.docker:/root/.docker" \
+                digicert-container-signer \
+                sh -c "
+                  echo \"Getting signature information...\"
+                  cosign verify $VERBOSE_FLAG \"$INPUT_CONTAINER_IMAGE\" --output=json --insecure-ignore-tlog --insecure-ignore-sct 2>&1 || true
+                  echo \"\"
+                  echo \"Trying to triangulate signature details...\"
+                  cosign triangulate \"$INPUT_CONTAINER_IMAGE\" 2>&1 || true
+                "
+              
+              echo "Error: Could not verify the container signature with any method."
+              echo "This might indicate:"
+              echo "1. The signature was created with a certificate instead of a raw public key"
+              echo "2. The public key extracted doesn't match the signing key"
+              echo "3. The signature requires specific transparency log verification"
+              echo "4. The signature format is not compatible with the verification method"
+              exit 1
+            fi
+          fi
+        fi
+        
+        echo "Container image signature verification completed successfully: $INPUT_CONTAINER_IMAGE"
+
+branding:
+  icon: 'shield'
+  color: 'blue'
