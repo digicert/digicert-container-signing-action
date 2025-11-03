@@ -19,32 +19,34 @@ The DigiCert® Software Manager Container Sign Action offers the following featu
 
 Before you begin, ensure the following:
 
-- Docker is installed and available in the runner environment.
-- The runner can pull Docker images from your container registry.
-- The `digicert-container-signer` Docker image contains the required `COSIGN_PKCS11_MODULE_PATH` environment variable.
-- The DigiCert® client certificate is base64 encoded.
+- Docker is installed and available in the runner environment
+- The runner can pull Docker images from your container registry
+- The `digicert-container-signer` Docker image contains the required `COSIGN_PKCS11_MODULE_PATH` environment variable
+- The DigiCert® client certificate is base64 encoded
 
-Additionally: 
+Additionally, consider the following statements: 
 - The `COSIGN_PKCS11_MODULE_PATH` is automatically extracted from the `digicertinc/digicert-container-signer:latest` Docker image, tagged as `digicert-container-signer`.
 - The client certificate (`SM_CLIENT_CERT_FILE_B64`) is created once in a Docker volume for reuse across all signing operations. 
 - You can sign single-architecture and multi-architecture container images.
 
-### Security considerations
+### Security best practices
 
-- Store sensitive information like keypair aliases as GitHub secrets
-- Restrict access to your container registry
-- Rotate signing keys regularly
-- Use only the official DigiCert® container signer tool
+Review the following security considerations:
+
+- Store sensitive information like keypair aliases as GitHub secrets.
+- Restrict access to your container registry.
+- Rotate signing keys regularly.
+- Use only the official DigiCert® container signer tool.
 
 ## Workflow
 
-Review the following high-level workflow for this action: 
+Review the following high-level workflow, where this action: 
 
 1. Pulls the DigiCert® container signer tool.
 2. Detects the PKCS#11 module path automatically.
 3. Creates the client certificate in a Docker volume.
 4. Sets up a reusable Docker command with environment variables.
-5. Verifies versions of CoSign and SMCTL.
+5. Verifies CoSign and SMCTL versions.
 6. Checks connectivity to Software Trust.
 7. Extracts the key URI for the specified keypair alias.
 8. Logs in to the registry, when credentials are provided.
@@ -57,10 +59,10 @@ Review the following high-level workflow for this action:
 
 | Input | Description | Required? | Default state |
 |-------|-------------|----------|---------|
-| `input` | Container image to sign | Yes | - |
-| `keypair-alias` | Keypair alias to use for signing | Yes | - |
-| `verify` | To verify container image signature | No | `false` |
-| `registry-url` | Container registry URL | Yes | - |
+| `input` | The container image to sign | Yes | - |
+| `keypair-alias` | The keypair alias to use for signing | Yes | - |
+| `verify` | To verify the container image signature | No | `false` |
+| `registry-url` | The container registry URL | Yes | - |
 | `recursive` | To sign multi-architecture images recursively | No | `false` |
 
 
@@ -70,32 +72,32 @@ This action automatically extracts the required `COSIGN_PKCS11_MODULE_PATH` from
 
 #### Required environment variables
 
-| Variable | Description | Required |
+| Variable | Description | Required? |
 |----------|-------------|----------|
-| `SM_API_KEY` | Software Trust API key | Yes |
-| `SM_HOST` | Software Trust host | Yes |
-| `SM_CLIENT_CERT_PASSWORD` | Software Trust client certificate password | Yes |
-| `SM_CLIENT_CERT_FILE_B64` | Software Trust client certificate (base64 encoded) | Yes |
+| `SM_API_KEY` | The Software Trust API key | Yes |
+| `SM_HOST` | The Software Trust host | Yes |
+| `SM_CLIENT_CERT_PASSWORD` | The Software Trust client certificate password | Yes |
+| `SM_CLIENT_CERT_FILE_B64` | The Software Trust client certificate (base64 encoded) | Yes |
 
 #### Registry authentication variables (optional)
 
 | Variable | Description | Required? |
 |----------|-------------|-----------|
-| `REGISTRY_USERNAME` | Container registry username for authentication | No. <br>Only required for private registries that need authentication. |
-| `REGISTRY_PASSWORD` | Container registry password for authentication | No. <br>Only required for private registries that need authentication. |
+| `REGISTRY_USERNAME` | The container registry username for authentication | No. <br>Only required for private registries that need authentication. |
+| `REGISTRY_PASSWORD` | The container registry password for authentication | No. <br>Only required for private registries that need authentication. |
 
 
 ### Secrets
 
 | Secret | Description | Required? |
 |--------|-------------|-----------|
-| `DIGICERT_KEYPAIR_ALIAS` | Software Trust keypair alias | Yes, if stored as a secret. |
-| `SM_API_KEY` | Software Trust API Key | Yes |
-| `SM_CLIENT_CERT_PASSWORD` | Software Trust client certificate password | Yes |
-| `SM_CLIENT_CERT_FILE_B64` | Software Trust client certificate (base64 encoded) | Yes |
-| `REGISTRY_USERNAME` | Container registry username | No. <br> Only required for private registries. |
-| `REGISTRY_PASSWORD` | Container registry password | No. <br> Only required for private registries. |
-| `VERBOSE` | Enable verbose output for cosign commands | No. <br> Only required to run command in verbose mode. |
+| `DIGICERT_KEYPAIR_ALIAS` | The Software Trust keypair alias | Yes, if stored as a secret. |
+| `SM_API_KEY` | The Software Trust API key | Yes |
+| `SM_CLIENT_CERT_PASSWORD` | The Software Trust client certificate password | Yes |
+| `SM_CLIENT_CERT_FILE_B64` | The Software Trust client certificate (base64 encoded) | Yes |
+| `REGISTRY_USERNAME` | The container registry username | No. <br> Only required for private registries. |
+| `REGISTRY_PASSWORD` | The container registry password | No. <br> Only required for private registries. |
+| `VERBOSE` | To enable verbose output for CoSign commands | No. <br> Only required to run command in verbose mode. |
 
 ## Usage examples
 
@@ -259,7 +261,7 @@ jobs:
 
 ## Troubleshooting
 
-### Error handling for common issues
+### Built-in troubleshooting
 
 This action handles the following common issues:
 
@@ -267,21 +269,25 @@ This action handles the following common issues:
 - Missing or invalid `COSIGN_PKCS11_MODULE_PATH` 
 - Missing or invalid `SM_CLIENT_CERT_FILE_B64` 
 - Certificate conversion failures
-- Missing key URI for the provided alias 
+- Missing key URI for alias 
 - Signing or verification failures 
 
-### Self-troubleshooting tips for common issues
+### Self-troubleshooting for common issues
 
-1. **Key URI not found**: Ensure the `keypair-alias` matches exactly the alias in your Software Trust.
-2. **Docker image pull failure**: Ensure the runner has access to pull the `digicertinc/digicert-container-signer:latest` image, tagged as `digicert-container-signer`.
-3. **Missing PKCS#11 module path**: Verify the container image contains the `COSIGN_PKCS11_MODULE_PATH` environment variable.
-4. **Certificate creation failure**: Ensure `SM_CLIENT_CERT_FILE_B64` contains a valid, base64-encoded .p12 certificate without extra whitespace.
-5. **Permission denied**: Ensure the runner has permission to pull and sign images.
-6. **Registry authentication failure**: For private registries, ensure `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` are set correctly.
-7. **Unauthorized signing error**: Ensure the registry URL matches the image registry. (This action automatically logs the registry if credentials are provided.)
-8. **Multi-architecture signing issues**: Use `recursive: 'true'` when signing multi-architecture images.
-9. **Healthcheck failures**: Verify your network connectivity to Software Trust. (This action will continue despite healthcheck failures.)
-10. **Cosign command error**: set true to `verbose` in the input to run cosign command in verbose mode.
+| Issue | Troubleshooting step | 
+|-------|-------------|
+| Key URI not found | Ensure the `keypair-alias` matches the alias in Software Trust. | 
+| Docker image pull failure | Ensure the runner has access to pull the `digicertinc/digicert-container-signer:latest` image, tagged as `digicert-container-signer`. | 
+| Missing PKCS#11 module path | Verify the container image contains the `COSIGN_PKCS11_MODULE_PATH` environment variable. | 
+| Certificate creation failure | Ensure `SM_CLIENT_CERT_FILE_B64` contains a valid, base64-encoded .p12 certificate without extra whitespace. | 
+| Permission denied | Ensure the runner has permission to pull and sign images. | 
+| Registry authentication failure | For private registries, ensure `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` are set correctly. | 
+| Unauthorized signing error | Ensure the registry URL matches the image registry. (This action automatically logs the registry if credentials are provided.) | 
+| Multi-architecture signing issue | Use `recursive: 'true'` when signing multi-architecture images. | 
+| Healthcheck failures | Verify your network connectivity to Software Trust. (This action will continue despite healthcheck failures.) | 
+| CoSign command error | Set `verbose` to true in the input to run CoSign command in verbose mode. | 
+
+
 
 ### Enable debug mode
 
@@ -292,21 +298,17 @@ env:
   ACTIONS_STEP_DEBUG: true
 ```
 
-## Contributions
+## Submit feedback and questions
 
-To submit contributions, create a pull request.
+* To submit contributions, create a pull request.
+* To submit support questions, open an issue in this repository.
+* To submit general feedback, [contact DigiCert](https://www.digicert.com/contact-us)
+
+
+## Learn more
+
+To learn more about centralizing and automating your code signing workflows with Software Trust, contact [Sales/Enquiry](mailto:sales@digicert.com) or visit our [documentation site](https://docs.digicert.com/).
 
 ## License information
 
 This project is licensed under the MIT License. To learn more, see the [LICENSE file](LICENSE).
-
-## Support
-
-For support questions, open an issue in this repository.
-
-## Feedback and issues
-[Contact DigiCert](https://www.digicert.com/contact-us)
-
-
-## Learn more
-To learn more about centralizing and automating your code signing workflows with Software Trust Manager, reach out to [Sales/Enquiry](mailto:sales@digicert.com) or visit: https://www.digicert.com/software-trust-manager.
