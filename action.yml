@@ -214,20 +214,17 @@ runs:
         HEALTHCHECK_EXIT_CODE=$?
         
         if [ $HEALTHCHECK_EXIT_CODE -ne 0 ]; then
-          echo "Warning: SMctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
-          echo "This may indicate connectivity issues with DigiCert STM service"
+          echo "Error: SMctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
+          echo "This indicates connectivity issues with DigiCert STM service"
           echo "Possible solutions:"
           echo "1. Check if corporate proxy settings are needed"
           echo "2. Verify firewall allows outbound HTTPS traffic"
           echo "3. Confirm DigiCert STM service URL is accessible"
           echo "4. Check if VPN or network routing is required"
-          echo "NOTE: Continuing with the workflow despite health check failure"
-          echo "Signing operations will be attempted regardless of health check status"
+          exit 1
         else
           echo "SMctl health check passed - DigiCert STM connectivity verified"
         fi
-        
-        echo "Health check step completed - workflow will continue regardless of result"
 
     - name: Extract Key URI from PKCS11 Module
       shell: bash
@@ -686,6 +683,30 @@ runs:
         fi
         
         echo "Container image signature verification completed successfully: $INPUT_CONTAINER_IMAGE"
+
+    - name: Cleanup Sensitive Data
+      shell: bash
+      if: always()
+      run: |
+        echo "Cleaning up sensitive data and resources..."
+        
+        # 1. Remove the certificate file from the Docker volume
+        echo "Removing client certificate from Docker volume..."
+        docker run --rm \
+          -v digicert-cert-volume:/tmp/certs \
+          digicert-container-signer \
+          sh -c 'rm -f /tmp/certs/client_cert.p12 && echo "Certificate file removed"' || echo "Warning: Failed to remove certificate file"
+        
+        # 2. Delete the Docker volume
+        echo "Deleting Docker volume: digicert-cert-volume..."
+        docker volume rm digicert-cert-volume || echo "Warning: Failed to remove Docker volume"
+        
+        # 3. Remove the Docker image from the runner
+        echo "Removing Docker image: digicert-container-signer..."
+        docker rmi digicert-container-signer || echo "Warning: Failed to remove Docker image"
+        docker rmi digicertinc/digicert-container-signer:latest || echo "Warning: Failed to remove pulled Docker image"
+        
+        echo "Cleanup completed successfully"
 
 branding:
   icon: 'shield'
