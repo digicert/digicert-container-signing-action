@@ -35,7 +35,7 @@ Additionally, consider the following statements:
 
 ### Security best practices
 
-Review the following security considerations:
+Review the following security-related best practices:
 
 - Store sensitive information like keypair aliases as GitHub secrets.
 - Restrict access to your container registry.
@@ -80,9 +80,26 @@ This action automatically extracts the required `COSIGN_PKCS11_MODULE_PATH` from
 | Variable | Description | Required? |
 |----------|-------------|----------|
 | `SM_API_KEY` | The Software Trust API key | Yes |
-| `SM_HOST` | The Software Trust host | Yes |
+| `SM_HOST` | The Software Trust host. <br><br>To view acceptable values, review **SM_Host options** below.  | Yes |
 | `SM_CLIENT_CERT_PASSWORD` | The Software Trust client certificate password | Yes |
 | `SM_CLIENT_CERT_FILE_B64` | The Software Trust client certificate (base64 encoded) | Yes |
+
+##### SM_Host options
+Review the following values that you can use in the `SM_HOST` variable:
+
+| Country                          | Host type   | SM_HOST value                                         |
+|----------------------------------|-------------|-------------------------------------------------------|
+| United States of America (USA)   | Demo        | https://clientauth.demo.one.digicert.com              |
+| United States of America (USA)   | Production  | https://clientauth.one.digicert.com                   |
+| Switzerland (CH)                 | Demo        | https://clientauth.demo.one.ch.digicert.com           |
+| Switzerland (CH)                 | Production  | https://clientauth.one.ch.digicert.com                |
+| Japan (JP)                       | Demo        | https://clientauth.demo.one.digicert.co.jp            |
+| Japan (JP)                       | Production  | https://clientauth.one.digicert.co.jp                 |
+| Netherlands (NL)                 | Demo        | https://clientauth.demo.one.nl.digicert.com           |
+| Netherlands (NL)                 | Production  | https://clientauth.one.nl.digicert.com                |
+
+
+To learn more about host environments, review the [Host environment](https://docs.digicert.com/en/software-trust-manager/get-started/requirements.html#host-environment-367442) section in the DigiCert documentation site.
 
 #### Registry authentication variables (optional)
 
@@ -307,7 +324,7 @@ env:
 
 * To submit contributions, create a pull request.
 * To submit support questions, open an issue in this repository.
-* To submit general feedback, [contact DigiCert](https://www.digicert.com/contact-us)
+* To submit general feedback, [contact DigiCert](https://www.digicert.com/contact-us).
 
 
 ## Additional information
