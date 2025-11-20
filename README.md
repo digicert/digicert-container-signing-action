@@ -1,23 +1,27 @@
-# DigiCert® Software Trust Container Sign Action
+# Container signing with DigiCert® Software Trust Manager
 
-Sign container images using DigiCert® Software Trust with CoSign via GitHub Actions. 
+Sign container images using DigiCert® Software Trust with CoSign and GitHub Actions. 
+
+This GitHub Actions enables secure, automated container signing within your CI/CD workflows using Software Trust and CoSign. CoSign provides a streamlined way of signing and verifying container images, protecting them from tampering and enhancing supply chain security.
+
+CoSign uses digital signatures to ensure integrity; images are signed with a private key, and recipients verify those signatures using the corresponding public key. When used with Software Trust, this action securely references your private key through the PKCS#11 (smpkcs11) library, ensuring protection without exposing key material.
 
 ## Features
 
-The DigiCert® Software Manager Container Sign Action offers the following features:
+Review the following key features of this action: 
 
-- Pulling the DigiCert® container signer tool
-- Extracting the PKCS#11 module path and key URIs automatically
+- Pulls the DigiCert® container signer tool
+- Extracts the PKCS#11 module path and key URIs automatically
 - Efficient client certificate handling with Docker volumes
 - Automatic registry authentication for private registries
-- Signing container images using CoSign with recursive signing (optional)
+- Signs container images using CoSign with recursive signing (optional)
 - Multiple signature verification methods (optional)
 - Software Trust connectivity healthchecks 
 - Comprehensive error handling and logging
 
-## Prerequisites
+## Before you begin
 
-Before you begin, ensure the following:
+Before you begin, review the following prerequisites: 
 
 - Docker is installed and available in the runner environment
 - The runner can pull Docker images from your container registry
@@ -31,7 +35,7 @@ Additionally, consider the following statements:
 
 ### Security best practices
 
-Review the following security considerations:
+Review the following security-related best practices:
 
 - Store sensitive information like keypair aliases as GitHub secrets.
 - Restrict access to your container registry.
@@ -40,7 +44,7 @@ Review the following security considerations:
 
 ## Workflow
 
-Review the following high-level workflow, where this action: 
+Review the following high-level workflow where this action: 
 
 1. Pulls the DigiCert® container signer tool.
 2. Detects the PKCS#11 module path automatically.
@@ -52,6 +56,7 @@ Review the following high-level workflow, where this action:
 8. Logs in to the registry, when credentials are provided.
 9. Signs the container image, optionally using recursive signing.
 10. Verifies the signature, if verification is enabled.
+
 
 ## Configuration and parameters
 
@@ -75,9 +80,26 @@ This action automatically extracts the required `COSIGN_PKCS11_MODULE_PATH` from
 | Variable | Description | Required? |
 |----------|-------------|----------|
 | `SM_API_KEY` | The Software Trust API key | Yes |
-| `SM_HOST` | The Software Trust host | Yes |
+| `SM_HOST` | The Software Trust host. <br><br>To view acceptable values, review **SM_Host options** below.  | Yes |
 | `SM_CLIENT_CERT_PASSWORD` | The Software Trust client certificate password | Yes |
 | `SM_CLIENT_CERT_FILE_B64` | The Software Trust client certificate (base64 encoded) | Yes |
+
+##### SM_Host options
+Review the following values that you can use in the `SM_HOST` variable:
+
+| Country                          | Host type   | SM_HOST value                                         |
+|----------------------------------|-------------|-------------------------------------------------------|
+| United States of America (USA)   | Demo        | https://clientauth.demo.one.digicert.com              |
+| United States of America (USA)   | Production  | https://clientauth.one.digicert.com                   |
+| Switzerland (CH)                 | Demo        | https://clientauth.demo.one.ch.digicert.com           |
+| Switzerland (CH)                 | Production  | https://clientauth.one.ch.digicert.com                |
+| Japan (JP)                       | Demo        | https://clientauth.demo.one.digicert.co.jp            |
+| Japan (JP)                       | Production  | https://clientauth.one.digicert.co.jp                 |
+| Netherlands (NL)                 | Demo        | https://clientauth.demo.one.nl.digicert.com           |
+| Netherlands (NL)                 | Production  | https://clientauth.one.nl.digicert.com                |
+
+
+To learn more about host environments, review the [Host environment](https://docs.digicert.com/en/software-trust-manager/get-started/requirements.html#host-environment-367442) section in the DigiCert documentation site.
 
 #### Registry authentication variables (optional)
 
@@ -263,7 +285,7 @@ jobs:
 
 ### Built-in troubleshooting
 
-This action handles the following common issues:
+This action troubleshoots the following common issues:
 
 - Missing DigiCert® container signer tool
 - Missing or invalid `COSIGN_PKCS11_MODULE_PATH` 
@@ -285,7 +307,7 @@ This action handles the following common issues:
 | Unauthorized signing error | Ensure the registry URL matches the image registry. (This action automatically logs the registry if credentials are provided.) | 
 | Multi-architecture signing issue | Use `recursive: 'true'` when signing multi-architecture images. | 
 | Healthcheck failures | Verify your network connectivity to Software Trust. (This action will continue despite healthcheck failures.) | 
-| CoSign command error | Set `verbose` to true in the input to run CoSign command in verbose mode. | 
+| CoSign command error | Set `verbose` to `true` in the input to run CoSign command in verbose mode. | 
 
 
 
@@ -302,12 +324,12 @@ env:
 
 * To submit contributions, create a pull request.
 * To submit support questions, open an issue in this repository.
-* To submit general feedback, [contact DigiCert](https://www.digicert.com/contact-us)
+* To submit general feedback, [contact DigiCert](https://www.digicert.com/contact-us).
 
 
-## Learn more
+## Additional information
 
-To learn more about centralizing and automating your code signing workflows with Software Trust, contact [Sales/Enquiry](mailto:sales@digicert.com) or visit our [documentation site](https://docs.digicert.com/).
+For more information about centralizing and automating your container signing workflows with Software Trust, contact [Sales/Enquiry](mailto:sales@digicert.com) or visit our [documentation site](https://docs.digicert.com/).
 
 ## License information
 
