@@ -53,8 +53,8 @@ runs:
       shell: bash
       run: |
         echo "Pulling DigiCert container signer tool..."
-        docker pull digicertinc/digicert-container-signer:latest
-        docker tag digicertinc/digicert-container-signer:latest digicert-container-signer
+        docker pull digicertinc/digicert-container-signer:0f58f52
+        docker tag digicertinc/digicert-container-signer:0f58f52 digicert-container-signer
 
     - name: Extract PKCS11 Module Path and List Key URIs
       shell: bash
@@ -214,17 +214,20 @@ runs:
         HEALTHCHECK_EXIT_CODE=$?
         
         if [ $HEALTHCHECK_EXIT_CODE -ne 0 ]; then
-          echo "Error: SMctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
-          echo "This indicates connectivity issues with DigiCert STM service"
+          echo "Warning: SMctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
+          echo "This may indicate connectivity issues with DigiCert STM service"
           echo "Possible solutions:"
           echo "1. Check if corporate proxy settings are needed"
           echo "2. Verify firewall allows outbound HTTPS traffic"
           echo "3. Confirm DigiCert STM service URL is accessible"
           echo "4. Check if VPN or network routing is required"
-          exit 1
+          echo "NOTE: Continuing with the workflow despite health check failure"
+          echo "Signing operations will be attempted regardless of health check status"
         else
           echo "SMctl health check passed - DigiCert STM connectivity verified"
         fi
+        
+        echo "Health check step completed - workflow will continue regardless of result"
 
     - name: Extract Key URI from PKCS11 Module
       shell: bash
@@ -704,7 +707,13 @@ runs:
         # 3. Remove the Docker image from the runner
         echo "Removing Docker image: digicert-container-signer..."
         docker rmi digicert-container-signer || echo "Warning: Failed to remove Docker image"
-        docker rmi digicertinc/digicert-container-signer:latest || echo "Warning: Failed to remove pulled Docker image"
+        docker rmi digicertinc/digicert-container-signer:0f58f52 || echo "Warning: Failed to remove pulled Docker image"
+        
+        # 4. Unset sensitive environment variables
+        echo "Unsetting sensitive environment variables..."
+        echo "SM_API_KEY=" >> $GITHUB_ENV
+        echo "SM_CLIENT_CERT_PASSWORD=" >> $GITHUB_ENV
+        echo "SM_CLIENT_CERT_FILE_B64=" >> $GITHUB_ENV
         
         echo "Cleanup completed successfully"
 
