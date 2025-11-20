@@ -214,20 +214,17 @@ runs:
         HEALTHCHECK_EXIT_CODE=$?
         
         if [ $HEALTHCHECK_EXIT_CODE -ne 0 ]; then
-          echo "Warning: SMctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
-          echo "This may indicate connectivity issues with DigiCert STM service"
+          echo "Error: smctl health check failed with exit code $HEALTHCHECK_EXIT_CODE"
+          echo "This indicates connectivity issues with DigiCert STM service"
           echo "Possible solutions:"
           echo "1. Check if corporate proxy settings are needed"
           echo "2. Verify firewall allows outbound HTTPS traffic"
           echo "3. Confirm DigiCert STM service URL is accessible"
           echo "4. Check if VPN or network routing is required"
-          echo "NOTE: Continuing with the workflow despite health check failure"
-          echo "Signing operations will be attempted regardless of health check status"
+          exit 1
         else
-          echo "SMctl health check passed - DigiCert STM connectivity verified"
+          echo "smctl health check passed - DigiCert STM connectivity verified"
         fi
-        
-        echo "Health check step completed - workflow will continue regardless of result"
 
     - name: Extract Key URI from PKCS11 Module
       shell: bash
