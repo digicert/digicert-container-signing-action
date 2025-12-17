@@ -139,7 +139,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Sign Container Image
-        uses: digicert/digicert-stm-container-sign-action@v1.0.0
+        uses: digicert/digicert-stm-container-sign-action@v1
         with:
           input: 'myregistry/myimage:latest'
           keypair-alias: 'my-signing-key'
@@ -169,7 +169,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Sign Multi-Architecture Container Image
-        uses: digicert/digicert-stm-container-sign-action@v1.0.0
+        uses: digicert/digicert-stm-container-sign-action@v1
         with:
           input: 'myregistry/myimage:latest'
           keypair-alias: 'my-signing-key'
@@ -201,7 +201,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Sign and Verify Container Image
-        uses: digicert/digicert-stm-container-sign-action@v1.0.0
+        uses: digicert/digicert-stm-container-sign-action@v1
         with:
           input: 'myregistry/myimage:latest'
           keypair-alias: 'my-signing-key'
@@ -264,7 +264,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Sign container image
-        uses: digicert/digicert-stm-container-sign-action@v1.0.0
+        uses: digicert/digicert-stm-container-sign-action@v1
         with:
           input: ${{ steps.meta.outputs.tags }}
           keypair-alias: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
