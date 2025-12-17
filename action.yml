@@ -1,5 +1,5 @@
 name: 'DigiCert® Container Signing Action'
-description: 'Sign container images using DigiCert® Software Trust Manager (STM) keypairs'
+description: 'Sign container images using DigiCert® Software Trust Manager (STM) keypairs and cosign'
 author: 'DigiCert®'
 
 inputs:
