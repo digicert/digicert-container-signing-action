@@ -715,5 +715,5 @@ runs:
         echo "Cleanup completed successfully"
 
 branding:
-  icon: 'shield'
-  color: 'blue'
+  icon: "check-circle"
+  color: "blue"
