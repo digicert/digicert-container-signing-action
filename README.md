@@ -105,8 +105,8 @@ To learn more about host environments, review the [Host environment](https://doc
 
 | Variable | Description | Required? |
 |----------|-------------|-----------|
-| `REGISTRY_USERNAME` | The container registry username for authentication | No. <br>Only required for private registries that need authentication. |
-| `REGISTRY_PASSWORD` | The container registry password for authentication | No. <br>Only required for private registries that need authentication. |
+| `REGISTRY_USERNAME` | The container registry username for authentication | No. <br>Optional if a `docker login` step was already performed in your workflow. |
+| `REGISTRY_PASSWORD` | The container registry password for authentication | No. <br>Optional if a `docker login` step was already performed in your workflow. |
 
 
 ### Secrets
@@ -117,8 +117,8 @@ To learn more about host environments, review the [Host environment](https://doc
 | `SM_API_KEY` | The Software Trust API key | Yes |
 | `SM_CLIENT_CERT_PASSWORD` | The Software Trust client certificate password | Yes |
 | `SM_CLIENT_CERT_FILE_B64` | The Software Trust client certificate (base64 encoded) | Yes |
-| `REGISTRY_USERNAME` | The container registry username | No. <br> Only required for private registries. |
-| `REGISTRY_PASSWORD` | The container registry password | No. <br> Only required for private registries. |
+| `REGISTRY_USERNAME` | The container registry username | No. <br> Optional if a `docker login` step was already performed in your workflow. |
+| `REGISTRY_PASSWORD` | The container registry password | No. <br> Optional if a `docker login` step was already performed in your workflow. |
 | `VERBOSE` | To enable verbose output for CoSign commands | No. <br> Only required to run command in verbose mode. |
 
 ## Usage examples
