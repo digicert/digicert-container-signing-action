@@ -712,12 +712,6 @@ runs:
         docker rmi digicert-container-signer || echo "Warning: Failed to remove Docker image"
         docker rmi digicertinc/digicert-container-signer:0f58f52 || echo "Warning: Failed to remove pulled Docker image"
         
-        # 4. Unset sensitive environment variables
-        echo "Unsetting sensitive environment variables..."
-        echo "SM_API_KEY=" >> $GITHUB_ENV
-        echo "SM_CLIENT_CERT_PASSWORD=" >> $GITHUB_ENV
-        echo "SM_CLIENT_CERT_FILE_B64=" >> $GITHUB_ENV
-        
         echo "Cleanup completed successfully"
 
 branding:
