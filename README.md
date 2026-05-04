@@ -1,21 +1,33 @@
 # Container signing with DigiCert® Software Trust Manager
 
-Sign container images using DigiCert® Software Trust with CoSign and GitHub Actions. 
+Sign container images using DigiCert® Software Trust with CoSign or Notation and GitHub Actions. 
 
-This GitHub Actions enables secure, automated container signing within your CI/CD workflows using Software Trust and CoSign. CoSign provides a streamlined way of signing and verifying container images, protecting them from tampering and enhancing supply chain security.
+This GitHub Actions enables secure, automated container signing within your CI/CD workflows using Software Trust. It supports two signature formats:
 
-CoSign uses digital signatures to ensure integrity; images are signed with a private key, and recipients verify those signatures using the corresponding public key. When used with Software Trust, this action securely references your private key through the PKCS#11 (smpkcs11) library, ensuring protection without exposing key material.
+- **CoSign (default):** Uses PKCS#11 to reference your private key through the smpkcs11 library. Produces Sigstore-compatible signatures.
+- **Notation (COSE/JWS):** Uses the DigiCert STM Notation plugin to sign OCI artifacts with CNCF Notary Project signatures. Supports both JWS and COSE envelope formats.
 
 ## Features
 
 Review the following key features of this action: 
 
+### CoSign mode (default)
 - Pulls the DigiCert® container signer tool
 - Extracts the PKCS#11 module path and key URIs automatically
-- Efficient client certificate handling with Docker volumes
-- Automatic registry authentication for private registries
 - Signs container images using CoSign with recursive signing (optional)
 - Multiple signature verification methods (optional)
+
+### Notation mode
+- Pulls the DigiCert® notation signer tool with pre-installed STM plugin
+- Signs using the Notation Plugin Framework with `notation-digicert-stm`
+- Supports JWS and COSE envelope formats
+- Optional RFC 3161 timestamping via `--timestamp-url`
+- Multi-arch image signing (iterates child manifests when `recursive: true`)
+- Trust policy-based verification with automatic CA certificate extraction
+
+### Common
+- Efficient client certificate handling with Docker volumes
+- Automatic registry authentication for private registries
 - Software Trust connectivity healthchecks 
 - Comprehensive error handling and logging
 
@@ -66,9 +78,14 @@ Review the following high-level workflow where this action:
 |-------|-------------|----------|---------|
 | `input` | The container image to sign | Yes | - |
 | `keypair-alias` | The keypair alias to use for signing | Yes | - |
-| `verify` | To verify the container image signature | No | `false` |
+| `signature-format` | Signature format: `cosign` or `notation` | No | `cosign` |
+| `envelope-type` | Notation envelope type: `jws` or `cose` (notation only) | No | `jws` |
+| `timestamp-url` | RFC 3161 TSA URL for timestamping (notation only) | No | - |
+| `timestamp-root-cert` | Path to TSA root certificate PEM (notation only) | No | - |
+| `verify` | To verify the container image signature | No | `true` |
 | `registry-url` | The container registry URL | Yes | - |
 | `recursive` | To sign multi-architecture images recursively | No | `false` |
+| `verbose` | To enable verbose output for signing commands | No | `false` |
 
 
 ### Environment variables
@@ -216,6 +233,108 @@ jobs:
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
 ```
 
+### Example of notation signing with JWS envelope
+
+```yaml
+name: Sign Container Image with Notation (JWS)
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  sign-notation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Sign Container Image with Notation
+        uses: digicert/digicert-container-signing-action@v1
+        with:
+          input: 'myregistry/myimage:latest'
+          keypair-alias: 'my-notation-key'
+          signature-format: 'notation'
+          envelope-type: 'jws'
+          verify: 'true'
+          registry-url: 'myregistry.io'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+```
+
+### Example of notation signing with COSE envelope and timestamping
+
+```yaml
+name: Sign Container Image with Notation (COSE + TSA)
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  sign-notation-cose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Sign Container Image with Notation COSE
+        uses: digicert/digicert-container-signing-action@v1
+        with:
+          input: 'myregistry/myimage:latest'
+          keypair-alias: 'my-rsa3072-key'
+          signature-format: 'notation'
+          envelope-type: 'cose'
+          timestamp-url: 'http://timestamp.digicert.com'
+          verify: 'true'
+          registry-url: 'myregistry.io'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+```
+
+### Example of notation multi-arch signing
+
+```yaml
+name: Sign Multi-Arch Image with Notation
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  sign-multiarch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Sign Multi-Arch Image
+        uses: digicert/digicert-container-signing-action@v1
+        with:
+          input: 'myregistry/myimage:latest'
+          keypair-alias: 'my-notation-key'
+          signature-format: 'notation'
+          envelope-type: 'cose'
+          recursive: 'true'
+          verify: 'true'
+          registry-url: 'myregistry.io'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+```
+
 ### Example of a complete workflow 
 
 ```yaml
@@ -308,6 +427,10 @@ This action troubleshoots the following common issues:
 | Multi-architecture signing issue | Use `recursive: 'true'` when signing multi-architecture images. | 
 | Healthcheck failures | Verify your network connectivity to Software Trust. (This action will continue despite healthcheck failures.) | 
 | CoSign command error | Set `verbose` to `true` in the input to run CoSign command in verbose mode. | 
+| Notation plugin not found | Ensure the `digicert-notation-signer` image is accessible and contains the pre-installed plugin. Run `notation plugin list` to verify. |
+| Notation trust policy rejection | Check that `registryScopes` matches the image registry. Run with `verbose: 'true'` to see the exact trust policy error. |
+| Notation CA cert extraction fails | The keypair must have an associated certificate chain in STM. Verify with `smctl kp cert-chain <alias>`. |
+| COSE/JWS mismatch | Ensure `envelope-type` matches what admission controllers expect. Ratify supports both, but the trust policy must match. |
 
 
 

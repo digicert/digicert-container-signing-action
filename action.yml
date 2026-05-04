@@ -1,5 +1,5 @@
 name: 'DigiCert® Container Signing Action'
-description: 'Sign container images using DigiCert® Software Trust Manager (STM) keypairs and cosign'
+description: 'Sign container images using DigiCert® Software Trust Manager (STM) keypairs with cosign or notation'
 author: 'DigiCert®'
 
 inputs:
@@ -9,10 +9,26 @@ inputs:
   keypair-alias:
     description: 'Keypair alias'
     required: true
+  signature-format:
+    description: 'Signature format to use: cosign or notation'
+    required: false
+    default: 'cosign'
+  envelope-type:
+    description: 'Notation envelope type: jws or cose (only used when signature-format is notation)'
+    required: false
+    default: 'jws'
+  timestamp-url:
+    description: 'RFC 3161 Timestamp Authority URL (only used when signature-format is notation)'
+    required: false
+    default: ''
+  timestamp-root-cert:
+    description: 'Path to TSA root certificate PEM file for verification (only used when signature-format is notation)'
+    required: false
+    default: ''
   verify:
     description: 'Verify the container image signature'
     required: false
-    default: 'false'
+    default: 'true'
   registry-url:
     description: 'Container registry URL'
     required: true
@@ -21,7 +37,7 @@ inputs:
     required: false
     default: 'false'
   verbose:
-    description: 'Enable verbose output for cosign commands'
+    description: 'Enable verbose output for signing commands'
     required: false
     default: 'false'
 
@@ -36,14 +52,36 @@ runs:
         # Save all inputs to local environment variables
         INPUT_CONTAINER_IMAGE="${{ inputs.input }}"
         INPUT_KEYPAIR_ALIAS="${{ inputs.keypair-alias }}"
+        INPUT_SIGNATURE_FORMAT="${{ inputs.signature-format }}"
+        INPUT_ENVELOPE_TYPE="${{ inputs.envelope-type }}"
+        INPUT_TIMESTAMP_URL="${{ inputs.timestamp-url }}"
+        INPUT_TIMESTAMP_ROOT_CERT="${{ inputs.timestamp-root-cert }}"
         INPUT_VERIFY="${{ inputs.verify }}"
         INPUT_REGISTRY_URL="${{ inputs.registry-url }}"
         INPUT_RECURSIVE="${{ inputs.recursive }}"
         INPUT_VERBOSE="${{ inputs.verbose }}"
         
+        # Validate signature-format
+        if [ "$INPUT_SIGNATURE_FORMAT" != "cosign" ] && [ "$INPUT_SIGNATURE_FORMAT" != "notation" ]; then
+          echo "Error: signature-format must be 'cosign' or 'notation', got '$INPUT_SIGNATURE_FORMAT'"
+          exit 1
+        fi
+        
+        # Validate envelope-type (only relevant for notation)
+        if [ "$INPUT_SIGNATURE_FORMAT" = "notation" ]; then
+          if [ "$INPUT_ENVELOPE_TYPE" != "jws" ] && [ "$INPUT_ENVELOPE_TYPE" != "cose" ]; then
+            echo "Error: envelope-type must be 'jws' or 'cose', got '$INPUT_ENVELOPE_TYPE'"
+            exit 1
+          fi
+        fi
+        
         # Export to GITHUB_ENV for use in subsequent steps
         echo "INPUT_CONTAINER_IMAGE=$INPUT_CONTAINER_IMAGE" >> $GITHUB_ENV
         echo "INPUT_KEYPAIR_ALIAS=$INPUT_KEYPAIR_ALIAS" >> $GITHUB_ENV
+        echo "INPUT_SIGNATURE_FORMAT=$INPUT_SIGNATURE_FORMAT" >> $GITHUB_ENV
+        echo "INPUT_ENVELOPE_TYPE=$INPUT_ENVELOPE_TYPE" >> $GITHUB_ENV
+        echo "INPUT_TIMESTAMP_URL=$INPUT_TIMESTAMP_URL" >> $GITHUB_ENV
+        echo "INPUT_TIMESTAMP_ROOT_CERT=$INPUT_TIMESTAMP_ROOT_CERT" >> $GITHUB_ENV
         echo "INPUT_VERIFY=$INPUT_VERIFY" >> $GITHUB_ENV
         echo "INPUT_REGISTRY_URL=$INPUT_REGISTRY_URL" >> $GITHUB_ENV
         echo "INPUT_RECURSIVE=$INPUT_RECURSIVE" >> $GITHUB_ENV
@@ -53,11 +91,30 @@ runs:
       shell: bash
       run: |
         echo "Pulling DigiCert container signer tool..."
-        docker pull digicertinc/digicert-container-signer:0f58f52
-        docker tag digicertinc/digicert-container-signer:0f58f52 digicert-container-signer
+        # Check if image already exists locally (for local dev/testing)
+        if docker image inspect digicert-container-signer >/dev/null 2>&1; then
+          echo "Using locally available digicert-container-signer image"
+        elif docker image inspect digicertinc/digicert-container-signer:latest >/dev/null 2>&1; then
+          echo "Using locally available digicertinc/digicert-container-signer:latest image"
+          docker tag digicertinc/digicert-container-signer:latest digicert-container-signer
+        else
+          docker pull digicertinc/digicert-container-signer:latest
+          docker tag digicertinc/digicert-container-signer:latest digicert-container-signer
+        fi
+
+        # Verify cosign is available
+        echo "Verifying cosign installation..."
+        docker run --rm digicert-container-signer cosign version
+
+        # Verify notation and plugin are available
+        echo "Verifying notation installation..."
+        docker run --rm digicert-container-signer notation version
+        echo "Verifying notation plugin..."
+        docker run --rm digicert-container-signer notation plugin list
 
     - name: Extract PKCS11 Module Path and List Key URIs
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "Extracting COSIGN_PKCS11_MODULE_PATH from DigiCert container..."
         
@@ -127,6 +184,9 @@ runs:
         echo "Environment validation passed"
         echo "SM_HOST: $SM_HOST"
         
+        # Single unified container image for both cosign and notation
+        SIGNER_IMAGE="digicert-container-signer"
+        
         # Create a named Docker volume for the certificate
         docker volume create digicert-cert-volume
         
@@ -135,23 +195,29 @@ runs:
         docker run --rm \
           -v digicert-cert-volume:/tmp/certs \
           -e SM_CLIENT_CERT_FILE_B64="$SM_CLIENT_CERT_FILE_B64" \
-          digicert-container-signer \
+          "$SIGNER_IMAGE" \
           sh -c 'echo "$SM_CLIENT_CERT_FILE_B64" | tr -d "\n\r\t " | base64 -d > /tmp/certs/client_cert.p12 && echo "Certificate created successfully in volume"'
         
         echo "Client certificate created in Docker volume: digicert-cert-volume"
         
     - name: Setup Docker Command
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "Setting up Docker base command..."
+        
+        # DOCKER_EXTRA_ARGS allows self-hosted runners to add options like --add-host
+        EXTRA_ARGS="${DOCKER_EXTRA_ARGS:-}"
         
         # Create reusable Docker command base with certificate volume
         DOCKER_BASE_CMD="docker run --rm \
           --network host \
+          $EXTRA_ARGS \
           -v digicert-cert-volume:/tmp/certs \
           -v \"/var/run/docker.sock:/var/run/docker.sock\" \
           -e SM_API_KEY=\"\${SM_API_KEY}\" \
           -e SM_HOST=\"\${SM_HOST}\" \
+          -e SM_TLS_SKIP_VERIFY=\"\${SM_TLS_SKIP_VERIFY:-false}\" \
           -e SM_CLIENT_CERT_PASSWORD=\"\${SM_CLIENT_CERT_PASSWORD}\" \
           -e SM_CLIENT_CERT_FILE=\"/tmp/certs/client_cert.p12\""
         
@@ -176,6 +242,7 @@ runs:
 
     - name: Check Cosign Version
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "Checking cosign version in DigiCert container..."
         if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
@@ -188,6 +255,7 @@ runs:
 
     - name: Check Smctl Version
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "Checking smctl version in DigiCert container..."
         if [ -f "/usr/local/bin/smtools/smpkcs11.so" ]; then
@@ -200,6 +268,7 @@ runs:
 
     - name: Smctl Health Check
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "Running smctl health check for DigiCert STM connectivity..."
         
@@ -228,6 +297,7 @@ runs:
 
     - name: Extract Key URI from PKCS11 Module
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "COSIGN_PKCS11_MODULE_PATH: $COSIGN_PKCS11_MODULE_PATH"
         
@@ -344,6 +414,7 @@ runs:
 
     - name: Sign Container Image
       shell: bash
+      if: inputs.signature-format == 'cosign' || inputs.signature-format == ''
       run: |
         echo "Signing container image: $INPUT_CONTAINER_IMAGE"
         echo "Using key URI: $KEY_URI"
@@ -421,9 +492,181 @@ runs:
           echo "Continuing with workflow despite signing failure..."
         fi
 
+    - name: Sign Container Image with Notation
+      shell: bash
+      if: inputs.signature-format == 'notation'
+      run: |
+        echo "Signing container image with notation: $INPUT_CONTAINER_IMAGE"
+        echo "Using keypair alias: $INPUT_KEYPAIR_ALIAS"
+        echo "Envelope type: $INPUT_ENVELOPE_TYPE"
+        
+        # DOCKER_EXTRA_ARGS allows self-hosted runners to add options like --add-host
+        EXTRA_ARGS="${DOCKER_EXTRA_ARGS:-}"
+        
+        # Mount Docker config.json only if it exists (for registry authentication)
+        DOCKER_CONFIG_MOUNT=""
+        if [ -f "$HOME/.docker/config.json" ]; then
+          DOCKER_CONFIG_MOUNT="-v \"$HOME/.docker/config.json:/root/.docker/config.json:ro\""
+        fi
+        
+        # Build the notation Docker base command
+        NOTATION_DOCKER_CMD="docker run --rm \
+          --network host \
+          $EXTRA_ARGS \
+          -v digicert-cert-volume:/tmp/certs \
+          $DOCKER_CONFIG_MOUNT \
+          -e SM_API_KEY=\"\${SM_API_KEY}\" \
+          -e SM_HOST=\"\${SM_HOST}\" \
+          -e SM_TLS_SKIP_VERIFY=\"\${SM_TLS_SKIP_VERIFY:-false}\" \
+          -e SM_CLIENT_CERT_PASSWORD=\"\${SM_CLIENT_CERT_PASSWORD}\" \
+          -e SM_CLIENT_CERT_FILE=\"/tmp/certs/client_cert.p12\""
+        
+        # Add verbose logging if enabled
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          NOTATION_DOCKER_CMD="$NOTATION_DOCKER_CMD -e SM_LOG_LEVEL=\"debug\""
+        fi
+        
+        NOTATION_DOCKER_CMD="$NOTATION_DOCKER_CMD digicert-container-signer"
+        
+        # Verify STM connectivity via smctl healthcheck
+        echo "Running smctl health check..."
+        set +e
+        HEALTH_OUTPUT=$(eval "$NOTATION_DOCKER_CMD smctl healthcheck" 2>&1)
+        HEALTH_EXIT=$?
+        set -e
+        if [ $HEALTH_EXIT -ne 0 ]; then
+          echo "Warning: smctl health check failed (exit $HEALTH_EXIT)"
+          echo "$HEALTH_OUTPUT"
+          echo "Continuing with signing attempt..."
+        else
+          echo "STM connectivity verified"
+        fi
+        
+        # Build notation sign command
+        SIGN_ARGS="--plugin digicert-stm --id \"$INPUT_KEYPAIR_ALIAS\""
+        
+        # Set signature format (envelope type)
+        if [ "$INPUT_ENVELOPE_TYPE" = "cose" ]; then
+          SIGN_ARGS="$SIGN_ARGS --signature-format cose"
+        else
+          SIGN_ARGS="$SIGN_ARGS --signature-format jws"
+        fi
+        
+        # Add timestamp URL if provided
+        if [ -n "$INPUT_TIMESTAMP_URL" ]; then
+          SIGN_ARGS="$SIGN_ARGS --timestamp-url \"$INPUT_TIMESTAMP_URL\""
+          if [ -n "$INPUT_TIMESTAMP_ROOT_CERT" ]; then
+            SIGN_ARGS="$SIGN_ARGS --timestamp-root-cert \"$INPUT_TIMESTAMP_ROOT_CERT\""
+          fi
+        fi
+        
+        # Add verbose flag
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          SIGN_ARGS="-d $SIGN_ARGS"
+        fi
+        
+        # Add --insecure-registry for localhost or HTTP registries
+        if echo "$INPUT_REGISTRY_URL" | grep -qE '^(localhost|127\.0\.0\.1)'; then
+          SIGN_ARGS="$SIGN_ARGS --insecure-registry"
+        fi
+        
+        # Handle multi-arch (recursive) signing
+        if [ "$INPUT_RECURSIVE" = "true" ]; then
+          echo "Recursive signing enabled - checking for multi-arch manifest..."
+          
+          # Use crane to inspect the manifest
+          set +e
+          MANIFEST=$(eval "$NOTATION_DOCKER_CMD crane manifest \"$INPUT_CONTAINER_IMAGE\"" 2>&1)
+          MANIFEST_EXIT=$?
+          set -e
+          
+          if [ $MANIFEST_EXIT -eq 0 ] && echo "$MANIFEST" | jq -e '.manifests' > /dev/null 2>&1; then
+            echo "Multi-arch image detected. Signing index and each platform manifest..."
+            
+            # Sign the index manifest itself
+            echo "Signing index manifest: $INPUT_CONTAINER_IMAGE"
+            SIGN_CMD="$NOTATION_DOCKER_CMD notation sign $SIGN_ARGS \"$INPUT_CONTAINER_IMAGE\""
+            echo "Command: notation sign $SIGN_ARGS \"$INPUT_CONTAINER_IMAGE\""
+            set +e
+            SIGN_OUTPUT=$(eval "$SIGN_CMD" 2>&1)
+            SIGN_EXIT_CODE=$?
+            set -e
+            
+            if [ "$INPUT_VERBOSE" = "true" ]; then
+              echo "$SIGN_OUTPUT"
+            fi
+            
+            if [ $SIGN_EXIT_CODE -ne 0 ]; then
+              echo "Warning: Failed to sign index manifest (exit $SIGN_EXIT_CODE)"
+              echo "$SIGN_OUTPUT"
+            else
+              echo "Index manifest signed successfully"
+            fi
+            
+            # Sign each child platform manifest
+            REPO="${INPUT_CONTAINER_IMAGE%%:*}"
+            REPO="${REPO%%@*}"
+            for DIGEST in $(echo "$MANIFEST" | jq -r '.manifests[].digest'); do
+              CHILD_REF="${REPO}@${DIGEST}"
+              echo "Signing child manifest: $CHILD_REF"
+              CHILD_CMD="$NOTATION_DOCKER_CMD notation sign $SIGN_ARGS \"$CHILD_REF\""
+              set +e
+              CHILD_OUTPUT=$(eval "$CHILD_CMD" 2>&1)
+              CHILD_EXIT=$?
+              set -e
+              if [ $CHILD_EXIT -ne 0 ]; then
+                echo "Warning: Failed to sign child $CHILD_REF (exit $CHILD_EXIT)"
+                if [ "$INPUT_VERBOSE" = "true" ]; then echo "$CHILD_OUTPUT"; fi
+              else
+                echo "Signed: $CHILD_REF"
+              fi
+            done
+          else
+            echo "Single-arch image or manifest inspection unavailable. Signing directly..."
+            SIGN_CMD="$NOTATION_DOCKER_CMD notation sign $SIGN_ARGS \"$INPUT_CONTAINER_IMAGE\""
+            echo "Command: notation sign $SIGN_ARGS \"$INPUT_CONTAINER_IMAGE\""
+            set +e
+            SIGN_OUTPUT=$(eval "$SIGN_CMD" 2>&1)
+            SIGN_EXIT_CODE=$?
+            set -e
+            if [ "$INPUT_VERBOSE" = "true" ]; then echo "$SIGN_OUTPUT"; fi
+            if [ $SIGN_EXIT_CODE -eq 0 ]; then
+              echo "Container image signed successfully: $INPUT_CONTAINER_IMAGE"
+            else
+              echo "Warning: Container signing failed with exit code $SIGN_EXIT_CODE"
+              echo "$SIGN_OUTPUT"
+              echo "Continuing with workflow despite signing failure..."
+            fi
+          fi
+        else
+          # Single image signing
+          SIGN_CMD="$NOTATION_DOCKER_CMD notation sign $SIGN_ARGS \"$INPUT_CONTAINER_IMAGE\""
+          echo "Command: notation sign $SIGN_ARGS \"$INPUT_CONTAINER_IMAGE\""
+          echo ""
+          
+          set +e
+          SIGN_OUTPUT=$(eval "$SIGN_CMD" 2>&1)
+          SIGN_EXIT_CODE=$?
+          set -e
+          
+          if [ "$INPUT_VERBOSE" = "true" ]; then
+            echo "=== Console Output from Notation Sign ==="
+            echo "$SIGN_OUTPUT"
+            echo "=== End of Console Output ==="
+          fi
+          
+          if [ $SIGN_EXIT_CODE -eq 0 ]; then
+            echo "Container image signed successfully with notation: $INPUT_CONTAINER_IMAGE"
+          else
+            echo "Warning: Container signing with notation failed with exit code $SIGN_EXIT_CODE"
+            echo "$SIGN_OUTPUT"
+            echo "Continuing with workflow despite signing failure..."
+          fi
+        fi
+
     - name: Extract Public Key for Verification (Optional)
       shell: bash
-      if: inputs.verify == 'true'
+      if: inputs.verify == 'true' && (inputs.signature-format == 'cosign' || inputs.signature-format == '')
       run: |
         echo "Extracting public key for verification using smctl..."
         echo "Searching for keypair with alias: $INPUT_KEYPAIR_ALIAS"
@@ -594,7 +837,7 @@ runs:
 
     - name: Verify Container Image Signature (Optional)
       shell: bash
-      if: inputs.verify == 'true'
+      if: inputs.verify == 'true' && (inputs.signature-format == 'cosign' || inputs.signature-format == '')
       run: |
         echo "Verifying container image signature..."
         echo "Using public key file: $PUBLIC_KEY_FILE"
@@ -613,70 +856,72 @@ runs:
           VERBOSE_FLAG=""
         fi
         
+        # Read the public key content on the host and pass it as an env var to avoid
+        # bind-mount path issues (Windows paths, /tmp dir conflicts, etc.)
+        PUBLIC_KEY_CONTENT=$(cat "$PUBLIC_KEY_FILE")
+        
+        # Build docker base flags for verification (need network access to registry)
+        EXTRA_ARGS="${DOCKER_EXTRA_ARGS:-}"
+        INSECURE_REGISTRY_FLAG=""
+        if echo "$INPUT_REGISTRY_URL" | grep -qE "^(localhost|127\.0\.0\.1)"; then
+          INSECURE_REGISTRY_FLAG="--allow-http-registry"
+        fi
+        
         # Method 1: Try with public key (original approach)
         echo "Method 1: Verifying with public key..."
         docker run --rm \
-          -v "$PUBLIC_KEY_FILE:/tmp/public.key" \
+          --network host \
+          $EXTRA_ARGS \
           -v /var/run/docker.sock:/var/run/docker.sock \
           -v "$HOME/.docker:/root/.docker" \
+          -e COSIGN_PUBLIC_KEY="$PUBLIC_KEY_CONTENT" \
           digicert-container-signer \
           sh -c "
+            echo \"\$COSIGN_PUBLIC_KEY\" > /tmp/verify-pubkey.pem
             echo \"Verifying container image signature with public key...\"
-            cosign verify $VERBOSE_FLAG --key /tmp/public.key \"$INPUT_CONTAINER_IMAGE\" 2>&1
+            cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
           " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
         
         if [ "$VERIFICATION_SUCCESS" = "true" ]; then
           echo "Container image signature verified successfully with public key!"
         else
-          echo "Public key verification failed, trying certificate-based verification..."
+          echo "Public key verification failed."
           
-          # Method 2: Try keyless verification (for certificate-based signatures)
-          echo "Method 2: Attempting keyless verification..."
+          # Method 2: Try with insecure flags (for local/insecure registries)
+          echo "Method 2: Verification with insecure-ignore flags..."
           docker run --rm \
+            --network host \
+            $EXTRA_ARGS \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$HOME/.docker:/root/.docker" \
+            -e COSIGN_PUBLIC_KEY="$PUBLIC_KEY_CONTENT" \
             digicert-container-signer \
             sh -c "
-              echo \"Attempting keyless verification...\"
-              cosign verify $VERBOSE_FLAG \"$INPUT_CONTAINER_IMAGE\" --certificate-identity-regexp='.*' --certificate-oidc-issuer-regexp='.*' 2>&1
+              echo \"\$COSIGN_PUBLIC_KEY\" > /tmp/verify-pubkey.pem
+              echo \"Verifying with insecure flags...\"
+              cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" 2>&1
             " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
           
           if [ "$VERIFICATION_SUCCESS" = "true" ]; then
-            echo "Container image signature verified successfully with keyless verification!"
+            echo "Container image signature verified successfully!"
           else
-            echo "Keyless verification failed, trying with insecure flags..."
-            
-            # Method 3: Try with insecure flags to bypass transparency log requirements
             echo "Method 3: Verification with insecure flags..."
             docker run --rm \
-              -v "$PUBLIC_KEY_FILE:/tmp/public.key" \
+              --network host \
+              $EXTRA_ARGS \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v "$HOME/.docker:/root/.docker" \
+              -e COSIGN_PUBLIC_KEY="$PUBLIC_KEY_CONTENT" \
               digicert-container-signer \
               sh -c "
+                echo \"\$COSIGN_PUBLIC_KEY\" > /tmp/verify-pubkey.pem
                 echo \"Verifying with insecure flags...\"
-                cosign verify $VERBOSE_FLAG --key /tmp/public.key \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
+                cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
               " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
             
             if [ "$VERIFICATION_SUCCESS" = "true" ]; then
               echo "Container image signature verified successfully with insecure flags!"
             else
-              echo "All verification methods failed. Attempting to extract certificate information..."
-              
-              # Method 4: Try to get signing certificate information
-              echo "Method 4: Checking signature information..."
-              docker run --rm \
-                -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "$HOME/.docker:/root/.docker" \
-                digicert-container-signer \
-                sh -c "
-                  echo \"Getting signature information...\"
-                  cosign verify $VERBOSE_FLAG \"$INPUT_CONTAINER_IMAGE\" --output=json --insecure-ignore-tlog --insecure-ignore-sct 2>&1 || true
-                  echo \"\"
-                  echo \"Trying to triangulate signature details...\"
-                  cosign triangulate \"$INPUT_CONTAINER_IMAGE\" 2>&1 || true
-                "
-              
               echo "Error: Could not verify the container signature with any method."
               echo "This might indicate:"
               echo "1. The signature was created with a certificate instead of a raw public key"
@@ -690,17 +935,187 @@ runs:
         
         echo "Container image signature verification completed successfully: $INPUT_CONTAINER_IMAGE"
 
+    - name: Verify Container Image Signature with Notation (Optional)
+      shell: bash
+      if: inputs.verify == 'true' && inputs.signature-format == 'notation'
+      run: |
+        echo "Verifying container image signature with notation..."
+        echo "Image: $INPUT_CONTAINER_IMAGE"
+        
+        # DOCKER_EXTRA_ARGS allows self-hosted runners to add options like --add-host
+        EXTRA_ARGS="${DOCKER_EXTRA_ARGS:-}"
+        
+        # Mount Docker config.json only if it exists (for registry authentication)
+        DOCKER_CONFIG_MOUNT=""
+        if [ -f "$HOME/.docker/config.json" ]; then
+          DOCKER_CONFIG_MOUNT="-v \"$HOME/.docker/config.json:/root/.docker/config.json:ro\""
+        fi
+        
+        # Build the notation Docker command
+        NOTATION_DOCKER_CMD="docker run --rm \
+          --network host \
+          $EXTRA_ARGS \
+          -v digicert-cert-volume:/tmp/certs \
+          $DOCKER_CONFIG_MOUNT \
+          -e SM_API_KEY=\"\${SM_API_KEY}\" \
+          -e SM_HOST=\"\${SM_HOST}\" \
+          -e SM_TLS_SKIP_VERIFY=\"\${SM_TLS_SKIP_VERIFY:-false}\" \
+          -e SM_CLIENT_CERT_PASSWORD=\"\${SM_CLIENT_CERT_PASSWORD}\" \
+          -e SM_CLIENT_CERT_FILE=\"/tmp/certs/client_cert.p12\""
+        
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          NOTATION_DOCKER_CMD="$NOTATION_DOCKER_CMD -e SM_LOG_LEVEL=\"debug\""
+        fi
+        
+        NOTATION_DOCKER_CMD="$NOTATION_DOCKER_CMD digicert-container-signer"
+        
+        # Step 1: Trust store setup is handled inside VERIFY_SCRIPT below
+        # (smctl certificate download --keypair-alias ... -c --format pem)
+        TRUST_STORE_CONFIGURED=false
+        
+        # Step 2: Setup trust policy
+        # Build the trust policy JSON
+        # Notation 1.x requires either "*" (all) or a specific repo path (no wildcards like "reg/*")
+        # Extract the repository path from the image reference (strip tag and digest)
+        REGISTRY_SCOPE="${INPUT_CONTAINER_IMAGE%:*}"
+        REGISTRY_SCOPE="${REGISTRY_SCOPE%@*}"
+        
+        # Determine trust stores array
+        TSA_STORE=""
+        if [ -n "$INPUT_TIMESTAMP_ROOT_CERT" ]; then
+          TSA_STORE=', "tsa:digicert-tsa"'
+        fi
+        
+        TRUST_POLICY='{
+          "version": "1.0",
+          "trustPolicies": [
+            {
+              "name": "digicert-stm-policy",
+              "registryScopes": ["'"$REGISTRY_SCOPE"'"],
+              "signatureVerification": {
+                "level": "strict"
+              },
+              "trustStores": ["ca:digicert-stm"'"$TSA_STORE"'],
+              "trustedIdentities": ["*"]
+            }
+          ]
+        }'
+        
+        echo "Trust policy:"
+        echo "$TRUST_POLICY" | jq .
+        
+        # Step 3: Run notation verify with trust policy
+        # We need to create the trust policy and trust store inside the container
+        VERIFY_SCRIPT='
+          set -e
+          
+          # Setup trust store directory
+          mkdir -p /root/.config/notation/truststore/x509/ca/digicert-stm
+          
+          # Get certificate chain from the signing keypair using smctl certificate download
+          echo "Downloading certificate chain for keypair: '"$INPUT_KEYPAIR_ALIAS"'"
+          mkdir -p /tmp/cert-download
+          smctl certificate download --keypair-alias "'"$INPUT_KEYPAIR_ALIAS"'" -c --format pem -o /tmp/cert-download 2>&1 || true
+          
+          # Find the downloaded PEM file
+          CERT_FILE=$(find /tmp/cert-download -name "*.pem" 2>/dev/null | head -1)
+          
+          if [ -n "$CERT_FILE" ] && grep -q "BEGIN CERTIFICATE" "$CERT_FILE" 2>/dev/null; then
+            # Extract only CA certificates (notation ca trust store requires CA:TRUE certs, not leaf certs)
+            mkdir -p /tmp/cert-split
+            csplit -z -q -f /tmp/cert-split/cert- "$CERT_FILE" "/-----BEGIN CERTIFICATE-----/" "{*}" 2>/dev/null || true
+            
+            CA_CERT_COUNT=0
+            for splitcert in /tmp/cert-split/cert-*; do
+              IS_CA=$(openssl x509 -in "$splitcert" -noout -text 2>/dev/null | grep -c "CA:TRUE" || echo 0)
+              if [ "$IS_CA" -gt 0 ]; then
+                cat "$splitcert" >> /root/.config/notation/truststore/x509/ca/digicert-stm/cert-chain.pem
+                SUBJ=$(openssl x509 -in "$splitcert" -noout -subject 2>/dev/null | sed "s/subject=//")
+                echo "Added CA cert to trust store: $SUBJ"
+                CA_CERT_COUNT=$((CA_CERT_COUNT+1))
+              fi
+            done
+            
+            if [ "$CA_CERT_COUNT" -gt 0 ]; then
+              echo "Trust store configured with $CA_CERT_COUNT CA certificate(s)"
+            else
+              echo "Warning: No CA certificates found in downloaded chain"
+              exit 1
+            fi
+          else
+            echo "Warning: Could not retrieve certificate chain via download"
+            echo "Download output directory contents:"
+            ls -la /tmp/cert-download/ 2>/dev/null || echo "(empty)"
+            exit 1
+          fi
+          
+          # Write trust policy
+          mkdir -p /root/.config/notation
+          cat > /root/.config/notation/trustpolicy.json << POLICY_EOF
+          '"$TRUST_POLICY"'
+        POLICY_EOF
+          
+          # Show policy
+          notation policy show
+          
+          # Run verification
+          echo "Running notation verify..."
+          VERBOSE_ARG=""
+          if [ "'"$INPUT_VERBOSE"'" = "true" ]; then
+            VERBOSE_ARG="-d"
+          fi
+          
+          INSECURE_ARG=""
+          if echo "'"$INPUT_REGISTRY_URL"'" | grep -qE "^(localhost|127\\.0\\.0\\.1)"; then
+            INSECURE_ARG="--insecure-registry"
+          fi
+          
+          notation verify $VERBOSE_ARG $INSECURE_ARG "'"$INPUT_CONTAINER_IMAGE"'"
+        '
+        
+        echo "Running notation verification..."
+        set +e
+        VERIFY_OUTPUT=$(eval "$NOTATION_DOCKER_CMD sh -c '$VERIFY_SCRIPT'" 2>&1)
+        VERIFY_EXIT=$?
+        set -e
+        
+        if [ "$INPUT_VERBOSE" = "true" ]; then
+          echo "=== Notation Verify Output ==="
+          echo "$VERIFY_OUTPUT"
+          echo "=== End of Notation Verify Output ==="
+        fi
+        
+        if [ $VERIFY_EXIT -eq 0 ]; then
+          echo "Container image signature verified successfully with notation: $INPUT_CONTAINER_IMAGE"
+        else
+          echo "Warning: Notation verification failed with exit code $VERIFY_EXIT"
+          echo "$VERIFY_OUTPUT"
+          echo ""
+          echo "This might indicate:"
+          echo "1. The trust store does not contain the correct CA certificate"
+          echo "2. The trust policy registry scope does not match the image"
+          echo "3. The signature envelope type does not match expectations"
+          echo "4. The certificate chain could not be retrieved from STM"
+          echo ""
+          echo "To troubleshoot, run with verbose: 'true' and check the notation logs"
+          exit 1
+        fi
+
     - name: Cleanup Sensitive Data
       shell: bash
       if: always()
       run: |
         echo "Cleaning up sensitive data and resources..."
         
+        # Single unified container image for both cosign and notation
+        SIGNER_IMAGE="digicert-container-signer"
+        PULLED_IMAGE="digicertinc/digicert-container-signer:latest"
+        
         # 1. Remove the certificate file from the Docker volume
         echo "Removing client certificate from Docker volume..."
         docker run --rm \
           -v digicert-cert-volume:/tmp/certs \
-          digicert-container-signer \
+          "$SIGNER_IMAGE" \
           sh -c 'rm -f /tmp/certs/client_cert.p12 && echo "Certificate file removed"' || echo "Warning: Failed to remove certificate file"
         
         # 2. Delete the Docker volume
@@ -708,9 +1123,9 @@ runs:
         docker volume rm digicert-cert-volume || echo "Warning: Failed to remove Docker volume"
         
         # 3. Remove the Docker image from the runner
-        echo "Removing Docker image: digicert-container-signer..."
-        docker rmi digicert-container-signer || echo "Warning: Failed to remove Docker image"
-        docker rmi digicertinc/digicert-container-signer:0f58f52 || echo "Warning: Failed to remove pulled Docker image"
+        echo "Removing Docker image: $SIGNER_IMAGE..."
+        docker rmi "$SIGNER_IMAGE" || echo "Warning: Failed to remove Docker image"
+        docker rmi "$PULLED_IMAGE" || echo "Warning: Failed to remove pulled Docker image"
         
         echo "Cleanup completed successfully"
 

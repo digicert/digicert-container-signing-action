@@ -1,0 +1,440 @@
+name: Test Container Signing Action
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Which test suite to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - cosign
+          - notation
+  push:
+    branches: [test]
+
+env:
+  # Test image - we'll use a local registry
+  TEST_REGISTRY: localhost:5000
+  # Extra Docker args for self-hosted runners (e.g. --add-host for local STM)
+  DOCKER_EXTRA_ARGS: "--add-host clientauth.dcone.cluster.local:host-gateway"
+  TEST_IMAGE: localhost:5000/test/hello-world:latest
+
+jobs:
+  # -----------------------------------------------------------
+  # Setup: Start local registry and push a test image
+  # -----------------------------------------------------------
+  setup:
+    name: Setup Local Registry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start local Docker registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          echo "Local registry started on port 5000"
+
+      - name: Push test image to local registry
+        run: |
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+          echo "Test image pushed to local registry"
+
+  # -----------------------------------------------------------
+  # Test 1: Cosign - Default parameters (backward compatibility)
+  # -----------------------------------------------------------
+  test-cosign-defaults:
+    name: "Test Cosign: Default Parameters"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Action with only required inputs (backward compat)"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'cosign-rsa3072'
+          registry-url: 'localhost:5000'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 2: Cosign - Explicit cosign format (backward compat)
+  # -----------------------------------------------------------
+  test-cosign-explicit:
+    name: "Test Cosign: Explicit signature-format=cosign"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Explicit cosign format with all params"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'cosign-rsa3072'
+          signature-format: 'cosign'
+          verify: 'false'
+          registry-url: 'localhost:5000'
+          recursive: 'false'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 3: Cosign - Recursive multi-arch (backward compat)
+  # -----------------------------------------------------------
+  test-cosign-recursive:
+    name: "Test Cosign: Recursive signing"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Cosign recursive signing"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'cosign-rsa3072'
+          registry-url: 'localhost:5000'
+          recursive: 'true'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 4: Cosign - With verification enabled (backward compat)
+  # -----------------------------------------------------------
+  test-cosign-verify:
+    name: "Test Cosign: With verification"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Cosign with verify=true"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'cosign-rsa3072'
+          verify: 'true'
+          registry-url: 'localhost:5000'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 5: Notation - JWS envelope (default)
+  # -----------------------------------------------------------
+  test-notation-jws:
+    name: "Test Notation: JWS envelope"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Notation JWS signing"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'notation-rsa3072'
+          signature-format: 'notation'
+          envelope-type: 'jws'
+          verify: 'false'
+          registry-url: 'localhost:5000'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 6: Notation - COSE envelope
+  # -----------------------------------------------------------
+  test-notation-cose:
+    name: "Test Notation: COSE envelope"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Notation COSE signing"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'notation-rsa3072'
+          signature-format: 'notation'
+          envelope-type: 'cose'
+          verify: 'false'
+          registry-url: 'localhost:5000'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 7: Notation - With timestamp URL
+  # -----------------------------------------------------------
+  test-notation-timestamp:
+    name: "Test Notation: With timestamping"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Notation with TSA"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'notation-rsa3072'
+          signature-format: 'notation'
+          envelope-type: 'cose'
+          timestamp-url: 'http://timestamp.digicert.com'
+          verify: 'false'
+          registry-url: 'localhost:5000'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 8: Notation - Recursive multi-arch signing
+  # -----------------------------------------------------------
+  test-notation-recursive:
+    name: "Test Notation: Recursive multi-arch"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Notation recursive signing"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'notation-rsa3072'
+          signature-format: 'notation'
+          envelope-type: 'jws'
+          recursive: 'true'
+          verify: 'false'
+          registry-url: 'localhost:5000'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 9: Notation - With verification enabled
+  # -----------------------------------------------------------
+  test-notation-verify:
+    name: "Test Notation: With verification"
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: Start local registry
+        run: |
+          docker rm -f test-registry 2>/dev/null || true
+          docker run -d -p 5000:5000 --name test-registry registry:2
+          sleep 2
+          docker pull hello-world:latest
+          docker tag hello-world:latest localhost:5000/test/hello-world:latest
+          docker push localhost:5000/test/hello-world:latest
+
+      - name: "Test: Notation with verify=true"
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'notation-rsa3072'
+          signature-format: 'notation'
+          envelope-type: 'jws'
+          verify: 'true'
+          registry-url: 'localhost:5000'
+          verbose: 'true'
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_TLS_SKIP_VERIFY: ${{ vars.SM_TLS_SKIP_VERIFY }}
+
+  # -----------------------------------------------------------
+  # Test 10: Input validation - Invalid signature-format
+  # -----------------------------------------------------------
+  test-invalid-format:
+    name: "Test Validation: Invalid signature-format"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: "Test: Invalid signature-format should fail"
+        id: invalid_format
+        continue-on-error: true
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'cosign-rsa3072'
+          signature-format: 'invalid'
+          registry-url: 'localhost:5000'
+        env:
+          SM_API_KEY: 'dummy'
+          SM_HOST: 'https://dummy.example.com'
+          SM_CLIENT_CERT_PASSWORD: 'dummy'
+          SM_CLIENT_CERT_FILE_B64: 'ZHVtbXk='
+
+      - name: Verify step failed as expected
+        run: |
+          if [ "${{ steps.invalid_format.outcome }}" = "failure" ]; then
+            echo "PASS: Invalid signature-format correctly rejected"
+          else
+            echo "FAIL: Invalid signature-format was not rejected"
+            exit 1
+          fi
+
+  # -----------------------------------------------------------
+  # Test 11: Input validation - Invalid envelope-type
+  # -----------------------------------------------------------
+  test-invalid-envelope:
+    name: "Test Validation: Invalid envelope-type"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+
+      - name: "Test: Invalid envelope-type should fail"
+        id: invalid_envelope
+        continue-on-error: true
+        uses: ./
+        with:
+          input: 'localhost:5000/test/hello-world:latest'
+          keypair-alias: 'cosign-rsa3072'
+          signature-format: 'notation'
+          envelope-type: 'invalid'
+          registry-url: 'localhost:5000'
+        env:
+          SM_API_KEY: 'dummy'
+          SM_HOST: 'https://dummy.example.com'
+          SM_CLIENT_CERT_PASSWORD: 'dummy'
+          SM_CLIENT_CERT_FILE_B64: 'ZHVtbXk='
+
+      - name: Verify step failed as expected
+        run: |
+          if [ "${{ steps.invalid_envelope.outcome }}" = "failure" ]; then
+            echo "PASS: Invalid envelope-type correctly rejected"
+          else
+            echo "FAIL: Invalid envelope-type was not rejected"
+            exit 1
+          fi
