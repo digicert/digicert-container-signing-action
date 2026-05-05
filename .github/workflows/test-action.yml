@@ -50,6 +50,7 @@ jobs:
     name: "Test Cosign: Default Parameters"
     runs-on: ubuntu-latest
     needs: setup
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'cosign' || github.event_name != 'workflow_dispatch'
     steps:
       - name: Checkout action
         uses: actions/checkout@v4
@@ -83,7 +84,7 @@ jobs:
     name: "Test Cosign: Explicit signature-format=cosign"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'cosign' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -120,7 +121,7 @@ jobs:
     name: "Test Cosign: Recursive signing"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'cosign' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -155,7 +156,7 @@ jobs:
     name: "Test Cosign: With verification"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'cosign' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -190,7 +191,7 @@ jobs:
     name: "Test Notation: JWS envelope"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'notation' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -227,7 +228,7 @@ jobs:
     name: "Test Notation: COSE envelope"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'notation' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -264,7 +265,7 @@ jobs:
     name: "Test Notation: With timestamping"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'notation' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -302,7 +303,7 @@ jobs:
     name: "Test Notation: Recursive multi-arch"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'notation' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 
@@ -340,7 +341,7 @@ jobs:
     name: "Test Notation: With verification"
     runs-on: ubuntu-latest
     needs: setup
-    steps:
+    if: github.event.inputs.test_suite == 'all' || github.event.inputs.test_suite == 'notation' || github.event_name != 'workflow_dispatch'
       - name: Checkout action
         uses: actions/checkout@v4
 

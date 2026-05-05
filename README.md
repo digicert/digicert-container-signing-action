@@ -18,7 +18,7 @@ Review the following key features of this action:
 - Multiple signature verification methods (optional)
 
 ### Notation mode
-- Pulls the DigiCert® notation signer tool with pre-installed STM plugin
+- Pulls the DigiCert® container signer tool with pre-installed STM plugin
 - Signs using the Notation Plugin Framework with `notation-digicert-stm`
 - Supports JWS and COSE envelope formats
 - Optional RFC 3161 timestamping via `--timestamp-url`
@@ -82,7 +82,7 @@ Review the following high-level workflow where this action:
 | `envelope-type` | Notation envelope type: `jws` or `cose` (notation only) | No | `jws` |
 | `timestamp-url` | RFC 3161 TSA URL for timestamping (notation only) | No | - |
 | `timestamp-root-cert` | Path to TSA root certificate PEM (notation only) | No | - |
-| `verify` | To verify the container image signature | No | `true` |
+| `verify` | To verify the container image signature | No | `false` |
 | `registry-url` | The container registry URL | Yes | - |
 | `recursive` | To sign multi-architecture images recursively | No | `false` |
 | `verbose` | To enable verbose output for signing commands | No | `false` |
@@ -427,7 +427,7 @@ This action troubleshoots the following common issues:
 | Multi-architecture signing issue | Use `recursive: 'true'` when signing multi-architecture images. | 
 | Healthcheck failures | Verify your network connectivity to Software Trust. (This action will continue despite healthcheck failures.) | 
 | CoSign command error | Set `verbose` to `true` in the input to run CoSign command in verbose mode. | 
-| Notation plugin not found | Ensure the `digicert-notation-signer` image is accessible and contains the pre-installed plugin. Run `notation plugin list` to verify. |
+| Notation plugin not found | Ensure the `digicert-container-signer` image is accessible and contains the pre-installed plugin. Run `docker run --rm digicert-container-signer notation plugin list` to verify. |
 | Notation trust policy rejection | Check that `registryScopes` matches the image registry. Run with `verbose: 'true'` to see the exact trust policy error. |
 | Notation CA cert extraction fails | The keypair must have an associated certificate chain in STM. Verify with `smctl kp cert-chain <alias>`. |
 | COSE/JWS mismatch | Ensure `envelope-type` matches what admission controllers expect. Ratify supports both, but the trust policy must match. |

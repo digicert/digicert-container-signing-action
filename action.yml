@@ -28,7 +28,15 @@ inputs:
   verify:
     description: 'Verify the container image signature'
     required: false
-    default: 'true'
+    default: 'false'
+  image-tag:
+    description: 'Tag of the digicertinc/digicert-container-signer image to pull (e.g. latest, 1.0.0, or a SHA digest). Pin to a specific tag in production.'
+    required: false
+    default: 'latest'
+  insecure-verify:
+    description: 'Enable --insecure-ignore-tlog and --insecure-ignore-sct flags for cosign verify (for use with private/local registries that do not write to a transparency log)'
+    required: false
+    default: 'false'
   registry-url:
     description: 'Container registry URL'
     required: true
@@ -60,6 +68,7 @@ runs:
         INPUT_REGISTRY_URL="${{ inputs.registry-url }}"
         INPUT_RECURSIVE="${{ inputs.recursive }}"
         INPUT_VERBOSE="${{ inputs.verbose }}"
+        INPUT_INSECURE_VERIFY="${{ inputs.insecure-verify }}"
         
         # Validate signature-format
         if [ "$INPUT_SIGNATURE_FORMAT" != "cosign" ] && [ "$INPUT_SIGNATURE_FORMAT" != "notation" ]; then
@@ -86,20 +95,37 @@ runs:
         echo "INPUT_REGISTRY_URL=$INPUT_REGISTRY_URL" >> $GITHUB_ENV
         echo "INPUT_RECURSIVE=$INPUT_RECURSIVE" >> $GITHUB_ENV
         echo "INPUT_VERBOSE=$INPUT_VERBOSE" >> $GITHUB_ENV
+        echo "INPUT_INSECURE_VERIFY=$INPUT_INSECURE_VERIFY" >> $GITHUB_ENV
 
     - name: Pull DigiCert Container Signer Tool
       shell: bash
       run: |
         echo "Pulling DigiCert container signer tool..."
+
+        # Validate DOCKER_EXTRA_ARGS to prevent shell injection: only allow
+        # recognised Docker options (--add-host, --network, --dns, --dns-search).
+        if [ -n "${DOCKER_EXTRA_ARGS:-}" ]; then
+          SAFE_ARGS=""
+          for arg in $DOCKER_EXTRA_ARGS; do
+            case "$arg" in
+              --add-host=*|--network=*|--dns=*|--dns-search=*|host) SAFE_ARGS="$SAFE_ARGS $arg" ;;
+              *) echo "Warning: unsupported DOCKER_EXTRA_ARGS token ignored: $arg" ;;
+            esac
+          done
+          DOCKER_EXTRA_ARGS="$SAFE_ARGS"
+        fi
+
+        REMOTE_IMAGE="digicertinc/digicert-container-signer:${{ inputs.image-tag }}"
+
         # Check if image already exists locally (for local dev/testing)
         if docker image inspect digicert-container-signer >/dev/null 2>&1; then
           echo "Using locally available digicert-container-signer image"
-        elif docker image inspect digicertinc/digicert-container-signer:latest >/dev/null 2>&1; then
-          echo "Using locally available digicertinc/digicert-container-signer:latest image"
-          docker tag digicertinc/digicert-container-signer:latest digicert-container-signer
+        elif docker image inspect "$REMOTE_IMAGE" >/dev/null 2>&1; then
+          echo "Using locally available $REMOTE_IMAGE image"
+          docker tag "$REMOTE_IMAGE" digicert-container-signer
         else
-          docker pull digicertinc/digicert-container-signer:latest
-          docker tag digicertinc/digicert-container-signer:latest digicert-container-signer
+          docker pull "$REMOTE_IMAGE"
+          docker tag "$REMOTE_IMAGE" digicert-container-signer
         fi
 
         # Verify cosign is available
@@ -556,7 +582,20 @@ runs:
         if [ -n "$INPUT_TIMESTAMP_URL" ]; then
           SIGN_ARGS="$SIGN_ARGS --timestamp-url \"$INPUT_TIMESTAMP_URL\""
           if [ -n "$INPUT_TIMESTAMP_ROOT_CERT" ]; then
-            SIGN_ARGS="$SIGN_ARGS --timestamp-root-cert \"$INPUT_TIMESTAMP_ROOT_CERT\""
+            # The cert lives on the host filesystem; copy it into the shared cert
+            # Docker volume so it is reachable inside the signing container at a
+            # stable path (/tmp/certs/tsa-root.pem).
+            if [ ! -f "$INPUT_TIMESTAMP_ROOT_CERT" ]; then
+              echo "Error: timestamp-root-cert file not found: $INPUT_TIMESTAMP_ROOT_CERT"
+              exit 1
+            fi
+            echo "Copying TSA root cert into signing volume..."
+            docker run --rm \
+              -v digicert-cert-volume:/tmp/certs \
+              -e TSA_CERT_CONTENT="$(cat "$INPUT_TIMESTAMP_ROOT_CERT")" \
+              digicert-container-signer \
+              sh -c 'printf "%s\n" "$TSA_CERT_CONTENT" > /tmp/certs/tsa-root.pem'
+            SIGN_ARGS="$SIGN_ARGS --timestamp-root-cert /tmp/certs/tsa-root.pem"
           fi
         fi
         
@@ -866,9 +905,17 @@ runs:
         if echo "$INPUT_REGISTRY_URL" | grep -qE "^(localhost|127\.0\.0\.1)"; then
           INSECURE_REGISTRY_FLAG="--allow-http-registry"
         fi
-        
-        # Method 1: Try with public key (original approach)
-        echo "Method 1: Verifying with public key..."
+
+        # --insecure-ignore-tlog / --insecure-ignore-sct are only enabled when the
+        # caller explicitly sets insecure-verify: 'true'.  Enabling them by default
+        # would weaken verification guarantees for all users.
+        INSECURE_TLOG_FLAGS=""
+        if [ "$INPUT_INSECURE_VERIFY" = "true" ]; then
+          INSECURE_TLOG_FLAGS="--insecure-ignore-tlog --insecure-ignore-sct"
+        fi
+
+        # Method 1: Strict verification with public key
+        echo "Method 1: Verifying with public key (strict)..."
         docker run --rm \
           --network host \
           $EXTRA_ARGS \
@@ -879,33 +926,17 @@ runs:
           sh -c "
             echo \"\$COSIGN_PUBLIC_KEY\" > /tmp/verify-pubkey.pem
             echo \"Verifying container image signature with public key...\"
-            cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
+            cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" $INSECURE_TLOG_FLAGS 2>&1
           " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
-        
+
         if [ "$VERIFICATION_SUCCESS" = "true" ]; then
           echo "Container image signature verified successfully with public key!"
         else
           echo "Public key verification failed."
-          
-          # Method 2: Try with insecure flags (for local/insecure registries)
-          echo "Method 2: Verification with insecure-ignore flags..."
-          docker run --rm \
-            --network host \
-            $EXTRA_ARGS \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$HOME/.docker:/root/.docker" \
-            -e COSIGN_PUBLIC_KEY="$PUBLIC_KEY_CONTENT" \
-            digicert-container-signer \
-            sh -c "
-              echo \"\$COSIGN_PUBLIC_KEY\" > /tmp/verify-pubkey.pem
-              echo \"Verifying with insecure flags...\"
-              cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" 2>&1
-            " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
-          
-          if [ "$VERIFICATION_SUCCESS" = "true" ]; then
-            echo "Container image signature verified successfully!"
-          else
-            echo "Method 3: Verification with insecure flags..."
+
+          if [ "$INPUT_INSECURE_VERIFY" = "true" ]; then
+            # Method 2: Already tried with insecure flags in Method 1; try without as a fallback
+            echo "Method 2: Fallback verification without transparency-log flags..."
             docker run --rm \
               --network host \
               $EXTRA_ARGS \
@@ -915,13 +946,14 @@ runs:
               digicert-container-signer \
               sh -c "
                 echo \"\$COSIGN_PUBLIC_KEY\" > /tmp/verify-pubkey.pem
-                echo \"Verifying with insecure flags...\"
-                cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
+                echo \"Fallback: verifying without insecure-ignore flags...\"
+                cosign verify $VERBOSE_FLAG $INSECURE_REGISTRY_FLAG --key /tmp/verify-pubkey.pem \"$INPUT_CONTAINER_IMAGE\" 2>&1
               " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
-            
-            if [ "$VERIFICATION_SUCCESS" = "true" ]; then
-              echo "Container image signature verified successfully with insecure flags!"
-            else
+          fi
+
+          if [ "$VERIFICATION_SUCCESS" = "true" ]; then
+            echo "Container image signature verified successfully!"
+          else
               echo "Error: Could not verify the container signature with any method."
               echo "This might indicate:"
               echo "1. The signature was created with a certificate instead of a raw public key"
@@ -984,6 +1016,18 @@ runs:
         TSA_STORE=""
         if [ -n "$INPUT_TIMESTAMP_ROOT_CERT" ]; then
           TSA_STORE=', "tsa:digicert-tsa"'
+          # Copy the TSA root cert into the shared cert volume so it is accessible
+          # at a stable container path (/tmp/certs/tsa-root.pem).
+          if [ ! -f "$INPUT_TIMESTAMP_ROOT_CERT" ]; then
+            echo "Error: timestamp-root-cert file not found: $INPUT_TIMESTAMP_ROOT_CERT"
+            exit 1
+          fi
+          echo "Copying TSA root cert into signing volume for verification..."
+          docker run --rm \
+            -v digicert-cert-volume:/tmp/certs \
+            -e TSA_CERT_CONTENT="$(cat "$INPUT_TIMESTAMP_ROOT_CERT")" \
+            digicert-container-signer \
+            sh -c 'printf "%s\n" "$TSA_CERT_CONTENT" > /tmp/certs/tsa-root.pem'
         fi
         
         TRUST_POLICY='{
@@ -1047,6 +1091,15 @@ runs:
             echo "Download output directory contents:"
             ls -la /tmp/cert-download/ 2>/dev/null || echo "(empty)"
             exit 1
+          fi
+
+          # Setup TSA trust store if a TSA root cert was provided
+          if [ -f /tmp/certs/tsa-root.pem ]; then
+            echo "Setting up TSA trust store from /tmp/certs/tsa-root.pem..."
+            mkdir -p /root/.config/notation/truststore/x509/tsa/digicert-tsa
+            cp /tmp/certs/tsa-root.pem /root/.config/notation/truststore/x509/tsa/digicert-tsa/tsa-root.pem
+            TSA_SUBJ=$(openssl x509 -in /tmp/certs/tsa-root.pem -noout -subject 2>/dev/null | sed "s/subject=//")
+            echo "TSA trust store configured: $TSA_SUBJ"
           fi
           
           # Write trust policy
