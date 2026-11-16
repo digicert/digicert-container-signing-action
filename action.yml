@@ -10,7 +10,7 @@ inputs:
     description: 'Keypair alias'
     required: true
   verify:
-    description: 'Verify the container image signature'
+    description: 'Verify the container image signature using the configured DigiCert keypair'
     required: false
     default: 'false'
   registry-url:
@@ -399,11 +399,11 @@ runs:
         echo "$SIGN_CMD"
         echo ""
         
-        # Execute signing command and capture exit code and output, but don't let it fail the action
-        set +e  # Disable exit on error
-        SIGN_OUTPUT=$(eval "$SIGN_CMD" 2>&1)
-        SIGN_EXIT_CODE=$?
-        set -e  # Re-enable exit on error
+        if SIGN_OUTPUT=$(eval "$SIGN_CMD" 2>&1); then
+          SIGN_EXIT_CODE=0
+        else
+          SIGN_EXIT_CODE=$?
+        fi
         
         # Display console output only if verbose mode is enabled
         if [ "$INPUT_VERBOSE" = "true" ]; then
@@ -412,13 +412,14 @@ runs:
           echo "=== End of Console Output ==="
         fi
         
-        # Check signing result but continue workflow regardless
         if [ $SIGN_EXIT_CODE -eq 0 ]; then
           echo "Container image signed successfully: $INPUT_CONTAINER_IMAGE"
         else
-          echo "Warning: Container signing failed with exit code $SIGN_EXIT_CODE"
-          echo "Please check the console logs above for more details"
-          echo "Continuing with workflow despite signing failure..."
+          echo "Error: Container signing failed with exit code $SIGN_EXIT_CODE"
+          if [ "$INPUT_VERBOSE" != "true" ]; then
+            echo "$SIGN_OUTPUT"
+          fi
+          exit "$SIGN_EXIT_CODE"
         fi
 
     - name: Extract Public Key for Verification (Optional)
@@ -604,8 +605,6 @@ runs:
           exit 1
         fi
         
-        echo "Attempting verification with different methods..."
-        
         # Set verbose flag if enabled
         if [ "$INPUT_VERBOSE" = "true" ]; then
           VERBOSE_FLAG="-d"
@@ -613,79 +612,17 @@ runs:
           VERBOSE_FLAG=""
         fi
         
-        # Method 1: Try with public key (original approach)
-        echo "Method 1: Verifying with public key..."
-        docker run --rm \
+        echo "Verifying with the configured DigiCert keypair's public key..."
+        if docker run --rm \
           -v "$PUBLIC_KEY_FILE:/tmp/public.key" \
           -v /var/run/docker.sock:/var/run/docker.sock \
           -v "$HOME/.docker:/root/.docker" \
           digicert-container-signer \
-          sh -c "
-            echo \"Verifying container image signature with public key...\"
-            cosign verify $VERBOSE_FLAG --key /tmp/public.key \"$INPUT_CONTAINER_IMAGE\" 2>&1
-          " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
-        
-        if [ "$VERIFICATION_SUCCESS" = "true" ]; then
+          cosign verify $VERBOSE_FLAG --key /tmp/public.key "$INPUT_CONTAINER_IMAGE" 2>&1; then
           echo "Container image signature verified successfully with public key!"
         else
-          echo "Public key verification failed, trying certificate-based verification..."
-          
-          # Method 2: Try keyless verification (for certificate-based signatures)
-          echo "Method 2: Attempting keyless verification..."
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$HOME/.docker:/root/.docker" \
-            digicert-container-signer \
-            sh -c "
-              echo \"Attempting keyless verification...\"
-              cosign verify $VERBOSE_FLAG \"$INPUT_CONTAINER_IMAGE\" --certificate-identity-regexp='.*' --certificate-oidc-issuer-regexp='.*' 2>&1
-            " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
-          
-          if [ "$VERIFICATION_SUCCESS" = "true" ]; then
-            echo "Container image signature verified successfully with keyless verification!"
-          else
-            echo "Keyless verification failed, trying with insecure flags..."
-            
-            # Method 3: Try with insecure flags to bypass transparency log requirements
-            echo "Method 3: Verification with insecure flags..."
-            docker run --rm \
-              -v "$PUBLIC_KEY_FILE:/tmp/public.key" \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v "$HOME/.docker:/root/.docker" \
-              digicert-container-signer \
-              sh -c "
-                echo \"Verifying with insecure flags...\"
-                cosign verify $VERBOSE_FLAG --key /tmp/public.key \"$INPUT_CONTAINER_IMAGE\" --insecure-ignore-tlog --insecure-ignore-sct 2>&1
-              " && VERIFICATION_SUCCESS=true || VERIFICATION_SUCCESS=false
-            
-            if [ "$VERIFICATION_SUCCESS" = "true" ]; then
-              echo "Container image signature verified successfully with insecure flags!"
-            else
-              echo "All verification methods failed. Attempting to extract certificate information..."
-              
-              # Method 4: Try to get signing certificate information
-              echo "Method 4: Checking signature information..."
-              docker run --rm \
-                -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "$HOME/.docker:/root/.docker" \
-                digicert-container-signer \
-                sh -c "
-                  echo \"Getting signature information...\"
-                  cosign verify $VERBOSE_FLAG \"$INPUT_CONTAINER_IMAGE\" --output=json --insecure-ignore-tlog --insecure-ignore-sct 2>&1 || true
-                  echo \"\"
-                  echo \"Trying to triangulate signature details...\"
-                  cosign triangulate \"$INPUT_CONTAINER_IMAGE\" 2>&1 || true
-                "
-              
-              echo "Error: Could not verify the container signature with any method."
-              echo "This might indicate:"
-              echo "1. The signature was created with a certificate instead of a raw public key"
-              echo "2. The public key extracted doesn't match the signing key"
-              echo "3. The signature requires specific transparency log verification"
-              echo "4. The signature format is not compatible with the verification method"
-              exit 1
-            fi
-          fi
+          echo "Error: Container signature verification failed with the configured DigiCert keypair."
+          exit 1
         fi
         
         echo "Container image signature verification completed successfully: $INPUT_CONTAINER_IMAGE"

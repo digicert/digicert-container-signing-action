@@ -15,7 +15,7 @@ Review the following key features of this action:
 - Efficient client certificate handling with Docker volumes
 - Automatic registry authentication for private registries
 - Signs container images using CoSign with recursive signing (optional)
-- Multiple signature verification methods (optional)
+- Signature verification using the configured DigiCert keypair (optional)
 - Software Trust connectivity healthchecks 
 - Comprehensive error handling and logging
 
@@ -66,10 +66,14 @@ Review the following high-level workflow where this action:
 |-------|-------------|----------|---------|
 | `input` | The container image to sign | Yes | - |
 | `keypair-alias` | The keypair alias to use for signing | Yes | - |
-| `verify` | To verify the container image signature | No | `false` |
+| `verify` | Verify the container image signature using the configured DigiCert keypair | No | `false` |
 | `registry-url` | The container registry URL | Yes | - |
 | `recursive` | To sign multi-architecture images recursively | No | `false` |
 
+Signing failures fail the action, even when `verify` is `false`. When `verify: 'true'`,
+verification must succeed using the public key of the configured `keypair-alias`.
+The action fails if that check fails; it does not fall back to keyless verification
+or retry with transparency log or signed certificate timestamp checks disabled.
 
 ### Environment variables
 
